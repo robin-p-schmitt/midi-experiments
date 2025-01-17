@@ -4,16 +4,23 @@ import h5py
 import numpy as np
 import pretty_midi
 from mido import KeySignatureError
+from midi2audio import FluidSynth
+from matplotlib import pyplot as plt
+import librosa
+from multiprocessing import Process, Queue
+from typing import Optional, List
+import time
 
 DATA_BASE_PATH = 'data'
 DATA_GZ_NAME = 'lmd_full.tar.gz'
 DATA_GZ_PATH = os.path.join(DATA_BASE_PATH, DATA_GZ_NAME)
 DATA_UNPACKED_PATH = os.path.join(DATA_BASE_PATH, 'lmd_full')
 HDF_FILE_PATH = os.path.join(DATA_BASE_PATH, 'piano_rolls.hdf5')
+SAMPLING_FREQ = 100
 
 MAX_NUM_TIME_STEPS = 500
 TARGET_INSTRUMENT = "Bass"
-MAX_NUM_PROCESSED_FILES = 5_000
+MAX_NUM_PROCESSED_FILES = 20_000
 START_NOTE = 21
 NUM_NOTES = 88
 
@@ -41,12 +48,12 @@ def unpack_dataset():
 
 def extract_piano_roll_from_instrument(instrument: pretty_midi.Instrument):
   """
-  Extract the piano roll for the target instrument and binarize it.
+  Extract the piano roll for the target instrument, binarize, and roll it.
   :param instrument:
   :return:
   """
   # Extract the piano roll for the target instrument
-  piano_roll = instrument.get_piano_roll(fs=100)[START_NOTE:START_NOTE + NUM_NOTES]  # (NUM_NOTES, MAX_NUM_TIME_STEPS)
+  piano_roll = instrument.get_piano_roll(fs=SAMPLING_FREQ)[START_NOTE:START_NOTE + NUM_NOTES]  # (NUM_NOTES, MAX_NUM_TIME_STEPS)
   if np.all(piano_roll == 0) or piano_roll.shape[1] < MAX_NUM_TIME_STEPS:
     # Skip empty piano rolls and those shorter than MAX_NUM_TIME_STEPS
     return None
@@ -60,13 +67,22 @@ def extract_piano_roll_from_instrument(instrument: pretty_midi.Instrument):
   return piano_roll
 
 
-def build_hdf_file():
-  if os.path.exists(HDF_FILE_PATH):
-    print('HDF file already exists.')
+def build_hdf_file(hdf_file_path: str, directories: List[str], queue: Queue):
+  """
+  Build an HDF file containing the piano rolls for the target instrument. If the target instrument is not found
+  in a MIDI file, the file is skipped.
+
+  Piano rolls are binarized, i.e., the velocity is set to 1 if the note is played at a time step, and 0 otherwise.
+  Piano rolls are also resized to have MAX_NUM_TIME_STEPS time steps and are rolled such that the first time step
+  contains the first played note.
+  :return:
+  """
+
+  if os.path.exists(hdf_file_path):
+    print(f"File {hdf_file_path} already exists. Skipping...")
     return
 
-  # create empty, expandable hdf5 file
-  with h5py.File(HDF_FILE_PATH, "w") as hf:
+  with h5py.File(hdf_file_path, "w") as hf:
     # Create an expandable dataset for piano rolls
     hf.create_dataset(
       "piano_rolls",
@@ -77,45 +93,146 @@ def build_hdf_file():
 
     # Process MIDI files and append to the dataset
     num_processed_files = 0
-    for dirpath, dirnames, filenames in os.walk(DATA_UNPACKED_PATH):
-      if num_processed_files >= MAX_NUM_PROCESSED_FILES:
-        break
-      for midi_filename in filenames:
-        num_processed_files += 1
-        midi_path = os.path.join(dirpath, midi_filename)
-
-        if num_processed_files % 1000 == 0:
-          print(f"Processed {num_processed_files} midi files")
+    for directory in directories:
+      for dirpath, dirnames, filenames in os.walk(directory):
         if num_processed_files >= MAX_NUM_PROCESSED_FILES:
           break
+        for midi_filename in filenames:
+          num_processed_files += 1
+          midi_path = os.path.join(
+            dirpath,
+            # midi_filename can be bytes or str
+            midi_filename if isinstance(midi_filename, str) else midi_filename.decode('utf-8')
+          )
 
-        # Load the MIDI file
-        try:
-          pm = pretty_midi.PrettyMIDI(midi_path)
-        # some files are known to be corrupted, so we skip them
-        except (OSError, EOFError, KeySignatureError, ValueError, KeyError, IndexError) as e:
-          print(f"Error loading {midi_path}: {e}")
-          continue
+          if num_processed_files % 1000 == 0:
+            print(f"Processed {num_processed_files} midi files for {hdf_file_path}")
+          if num_processed_files >= MAX_NUM_PROCESSED_FILES:
+            break
 
-        # only process midi files which include target instrument
-        instruments = [instrument for instrument in pm.instruments if TARGET_INSTRUMENT in instrument.name]
-        if len(instruments) > 0:
-          instrument = instruments[0]
-        else:
-          continue
+          # Load the MIDI file
+          try:
+            pm = pretty_midi.PrettyMIDI(midi_path)
+          # some files are known to be corrupted, so we skip them
+          except (OSError, EOFError, KeySignatureError, ValueError, KeyError, IndexError, ZeroDivisionError) as e:
+            print(f"Error loading {midi_path} for {hdf_file_path}: {e}")
+            continue
 
-        # Extract the piano roll for the target instrument
-        piano_roll = extract_piano_roll_from_instrument(instrument)
-        if piano_roll is None:
-          continue
+          # only process midi files which include target instrument
+          instruments = [instrument for instrument in pm.instruments if TARGET_INSTRUMENT in instrument.name]
+          if len(instruments) > 0:
+            instrument = instruments[0]
+          else:
+            continue
 
-        # Normalize piano roll values to [0, 1] (optional)
-        piano_roll = np.clip(piano_roll / 127, 0, 1)
+          # Extract the piano roll for the target instrument
+          piano_roll = extract_piano_roll_from_instrument(instrument)
+          if piano_roll is None:
+            continue
 
-        # Resize and append the piano roll to the dataset
-        # Resize the dataset to accommodate the new data
-        hf["piano_rolls"].resize((hf["piano_rolls"].shape[0] + 1, NUM_NOTES, MAX_NUM_TIME_STEPS))
-        hf["piano_rolls"][-1] = piano_roll  # Add new piano roll
+          # Resize and append the piano roll to the dataset
+          # Resize the dataset to accommodate the new data
+          hf["piano_rolls"].resize((hf["piano_rolls"].shape[0] + 1, NUM_NOTES, MAX_NUM_TIME_STEPS))
+          hf["piano_rolls"][-1] = piano_roll  # Add new piano roll
 
     # Verify the final dataset
-    print("Final dataset shape:", hf["piano_rolls"].shape)
+    print(f"Final dataset shape for {hdf_file_path}:", hf["piano_rolls"].shape)
+
+
+def build_hdf_file_multi(num_cores: int):
+  assert num_cores <= os.cpu_count(), "Number of cores exceeds the number of available cores."
+
+  # Divide the subdirectories among processes
+  subdirectories = [
+    os.path.join(DATA_UNPACKED_PATH, d) for d in os.listdir(DATA_UNPACKED_PATH) if
+    os.path.isdir(os.path.join(DATA_UNPACKED_PATH, d))
+  ]
+  subdirectories_split = np.array_split(subdirectories, num_cores)
+
+  processes = []
+  queue = Queue()
+
+  # Create one process per core
+  for i, subdirs in enumerate(subdirectories_split):
+    temp_hdf_file = f"{DATA_BASE_PATH}/piano_rolls_{i}.h5"
+    process = Process(target=build_hdf_file, args=(temp_hdf_file, subdirs, queue))
+    processes.append(process)
+    process.start()
+
+  # Wait for all processes to complete
+  for process in processes:
+    process.join()
+
+  # # Merge all temporary HDF files
+  # merge_hdf_files(HDF_FILE_PATH, temp_hdf_files)
+  #
+  # # Cleanup temporary files
+  # for temp_file in temp_hdf_files:
+  #   os.remove(temp_file)
+
+
+def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, fs: FluidSynth):
+  # Create a PrettyMIDI object
+  pm = pretty_midi.PrettyMIDI()
+
+  # Create an instrument (e.g., Piano, program number 0)
+  instrument = pretty_midi.Instrument(program=0)
+
+  # Iterate through the piano roll and add notes
+  for note_number, row in enumerate(piano_roll):
+    note_number += 21  # Adjust for MIDI pitch alignment (A0 starts at 21)
+    nonzero_indices = np.where(row > 0)[0]  # Get time steps with non-zero velocity
+    if len(nonzero_indices) == 0:
+      continue
+    start_idx = nonzero_indices[0]
+    for idx in range(1, len(nonzero_indices)):
+      if nonzero_indices[idx] != nonzero_indices[idx - 1] + 1:
+        # Found the end of a note
+        end_idx = nonzero_indices[idx - 1]
+        start_time = start_idx * 1 / SAMPLING_FREQ  # Convert time step to seconds
+        end_time = (end_idx + 1) * 1 / SAMPLING_FREQ
+        velocity = int(row[start_idx])  # Use velocity from the piano roll
+        note = pretty_midi.Note(
+          velocity=velocity,
+          pitch=note_number,
+          start=start_time,
+          end=end_time,
+        )
+        instrument.notes.append(note)
+        start_idx = nonzero_indices[idx]
+    # Add the last note
+    end_idx = nonzero_indices[-1]
+    start_time = start_idx * 0.01
+    end_time = (end_idx + 1) * 0.01
+    velocity = int(row[start_idx])
+    note = pretty_midi.Note(
+      velocity=velocity,
+      pitch=note_number,
+      start=start_time,
+      end=end_time,
+    )
+    instrument.notes.append(note)
+
+  # Add the instrument to the PrettyMIDI object
+  pm.instruments.append(instrument)
+
+  # Write the MIDI file
+  pm.write(f"{file_path}.mid")
+  fs.midi_to_audio(f"{file_path}.mid", f'{file_path}.wav')
+
+
+def visualize_piano_roll(piano_roll: np.ndarray):
+  # Plot the piano roll
+  plt.figure(figsize=(12, 6))
+  librosa.display.specshow(
+    piano_roll,
+    y_axis="cqt_note",
+    x_axis="time",
+    cmap="Greys",
+    sr=SAMPLING_FREQ,
+  )
+  plt.title(f"Piano Roll Visualization")
+  plt.xlabel("Time (frames)")
+  plt.ylabel("Note")
+  plt.colorbar(label="Velocity")
+  plt.show()

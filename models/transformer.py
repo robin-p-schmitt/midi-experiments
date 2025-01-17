@@ -2,9 +2,13 @@ import torch
 from torch import nn
 import torch.nn.functional as F  # noqa
 import numpy as np
+from typing import Callable
+import os
 
 from dataset import get_data_loaders_for_training
 from data_utils import HDF_FILE_PATH
+
+MODEL_CHECKPOINTS_PATH = "model_checkpoints"
 
 
 class TransformerDecoderModel(nn.Module):
@@ -37,7 +41,7 @@ class TransformerDecoderModel(nn.Module):
 def calc_model_output_and_loss(
         piano_rolls: torch.Tensor,
         model: TransformerDecoderModel,
-        criterion: nn.MSELoss,
+        criterion: Callable,
         optimizer: torch.optim.Optimizer,
         train_mode: bool,
 ):
@@ -53,17 +57,39 @@ def calc_model_output_and_loss(
   return outputs, loss
 
 
+def boosted_mse(outputs, ground_truth):
+  """
+  Boost MSE loss by giving more weight to non-zero values in the ground truth.
+  :param outputs:
+  :param ground_truth:
+  :return:
+  """
+  error = outputs - ground_truth
+  error[ground_truth != 0] *= 2
+  loss_boosted = torch.mean(error ** 2)
+
+  return loss_boosted
+
+
 def train(
         model: TransformerDecoderModel,
         n_epochs: int,
         lr: float,
         batch_size: int,
         alias: str,
+        criterion: Callable,
 ):
+  checkpoint_path = f"{MODEL_CHECKPOINTS_PATH}/{alias}.pt"
+  if os.path.exists(checkpoint_path):
+    print(f"Checkpoint found at {checkpoint_path}. Skipping training of {alias}.")
+    return
+
+  os.makedirs(MODEL_CHECKPOINTS_PATH, exist_ok=True)
+  print(f"Training {alias}...")
+
   device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
   model.to(device)
   optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-  criterion = nn.MSELoss()  # Assuming regression task
 
   train_loader, devtrain_loader, dev_loader = get_data_loaders_for_training(
     hdf5_file_path=HDF_FILE_PATH,
@@ -94,4 +120,4 @@ def train(
         print(f"Epoch {epoch + 1}/{n_epochs}, Batch {batch_idx + 1}, {data_alias} Loss: {loss.item():.4f}")
 
     # Save model checkpoint
-    torch.save(model.state_dict(), f"{alias}.pt")
+    torch.save(model.state_dict(), checkpoint_path)

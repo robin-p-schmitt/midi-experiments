@@ -1,4 +1,8 @@
+import copy
+from torch.nn import MSELoss
+
 from data_utils import NUM_NOTES, MAX_NUM_TIME_STEPS
+from models.transformer import boosted_mse
 
 
 transformer_v1_config = dict(
@@ -14,5 +18,6 @@ transformer_v1_config = dict(
     batch_size=32,
     n_epochs=10,
     lr=0.001,
+    criterion=MSELoss(),
   )
 )
