@@ -8,25 +8,25 @@ from midi2audio import FluidSynth
 from matplotlib import pyplot as plt
 import librosa
 from multiprocessing import Process, Queue
-from typing import Optional, List
+from typing import Optional, List, Tuple, Callable
 import time
 
 DATA_BASE_PATH = 'data'
 DATA_GZ_NAME = 'lmd_full.tar.gz'
 DATA_GZ_PATH = os.path.join(DATA_BASE_PATH, DATA_GZ_NAME)
 DATA_UNPACKED_PATH = os.path.join(DATA_BASE_PATH, 'lmd_full')
-HDF_FILE_PATH = os.path.join(DATA_BASE_PATH, 'piano_rolls.hdf5')
+HDF_FILE_PATH = os.path.join(DATA_BASE_PATH, 'piano_rolls.h5')
 SAMPLING_FREQ = 100
 
-MAX_NUM_TIME_STEPS = 500
+MAX_NUM_TIME_STEPS = 2_000
 TARGET_INSTRUMENT = "Bass"
-MAX_NUM_PROCESSED_FILES = 20_000
+MAX_NUM_PROCESSED_FILES = 100
 START_NOTE = 21
 NUM_NOTES = 88
 
 
 def download_dataset():
-  if os.path.exists(DATA_GZ_PATH):
+  if any([os.path.exists(path) for path in (DATA_GZ_PATH, DATA_UNPACKED_PATH, HDF_FILE_PATH)]):
     print('Dataset already downloaded.')
     return
 
@@ -37,7 +37,7 @@ def download_dataset():
 
 
 def unpack_dataset():
-  if os.path.exists(DATA_UNPACKED_PATH):
+  if any([os.path.exists(path) for path in (DATA_UNPACKED_PATH, HDF_FILE_PATH)]):
     print('Dataset already unpacked.')
     return
 
@@ -65,6 +65,30 @@ def extract_piano_roll_from_instrument(instrument: pretty_midi.Instrument):
   piano_roll = piano_roll[:, :MAX_NUM_TIME_STEPS]
   piano_roll[piano_roll > 0] = 1  # binarize the piano roll
   return piano_roll
+
+
+def extract_piano_roll_from_instrument_v2(instrument: pretty_midi.Instrument) -> Tuple[Optional[np.ndarray], int]:
+  """
+  Extract the piano roll for the target instrument, binarize, and roll it.
+  :param instrument:
+  :return: Tuple of piano roll and length
+  """
+  # Extract the piano roll for the target instrument
+  piano_roll = instrument.get_piano_roll(fs=SAMPLING_FREQ)[START_NOTE:START_NOTE + NUM_NOTES]  # (NUM_NOTES, None)
+  if np.all(piano_roll == 0):
+    # Skip empty piano rolls
+    return None, 0
+
+  # roll array such that the instrument starts in the first time step
+  first_non_zero_col = np.nonzero(piano_roll)[1][0]
+  piano_roll = np.roll(piano_roll, -first_non_zero_col)
+  # clip the time to the last non-zero column
+  seq_len = int(np.nonzero(piano_roll)[1][-1]) + 1
+  piano_roll = piano_roll[:, :seq_len]
+  piano_roll[piano_roll > 0] = 1  # binarize the piano roll
+
+  # return transposed piano roll and seq_len
+  return piano_roll.T, seq_len
 
 
 def build_hdf_file(hdf_file_path: str, directories: List[str], queue: Queue):
@@ -139,7 +163,150 @@ def build_hdf_file(hdf_file_path: str, directories: List[str], queue: Queue):
     print(f"Final dataset shape for {hdf_file_path}:", hf["piano_rolls"].shape)
 
 
-def build_hdf_file_multi(num_cores: int):
+def build_hdf_file_v2(hdf_file_path: str, directories: List[str], queue: Queue):
+  """
+  Build an HDF file containing the piano rolls for the target instrument. If the target instrument is not found
+  in a MIDI file, the file is skipped.
+
+  Piano rolls are binarized, i.e., the velocity is set to 1 if the note is played at a time step, and 0 otherwise.
+  Piano rolls are also resized to have MAX_NUM_TIME_STEPS time steps and are rolled such that the first time step
+  contains the first played note.
+  :return:
+  """
+
+  if os.path.exists(hdf_file_path):
+    print(f"File {hdf_file_path} already exists. Skipping...")
+    return
+
+  with h5py.File(hdf_file_path, "w") as hf:
+    # Create an expandable dataset for piano rolls
+    # we store all frames of all seqs along the first dimension and use a separate dataset for lengths
+    hf.create_dataset(
+      "piano_rolls",
+      shape=(0, NUM_NOTES),
+      maxshape=(None, NUM_NOTES),  # Unlimited growth along the first dimension
+      dtype=np.float32
+    )
+    hf.create_dataset(
+      "seq_lens",
+      shape=(0,),
+      maxshape=(None,),
+      dtype=np.int32
+    )
+
+    # Process MIDI files and append to the dataset
+    num_processed_files = 0
+    for directory in directories:
+      for dirpath, dirnames, filenames in os.walk(directory):
+        if num_processed_files >= MAX_NUM_PROCESSED_FILES:
+          break
+        for midi_filename in filenames:
+          num_processed_files += 1
+          midi_path = os.path.join(
+            dirpath,
+            # midi_filename can be bytes or str
+            midi_filename if isinstance(midi_filename, str) else midi_filename.decode('utf-8')
+          )
+
+          if num_processed_files % 1000 == 0:
+            print(f"Processed {num_processed_files} midi files for {hdf_file_path}")
+          if num_processed_files >= MAX_NUM_PROCESSED_FILES:
+            break
+
+          # Load the MIDI file
+          try:
+            pm = pretty_midi.PrettyMIDI(midi_path)
+          # some files are known to be corrupted, so we skip them
+          except (OSError, EOFError, KeySignatureError, ValueError, KeyError, IndexError, ZeroDivisionError) as e:
+            print(f"Error loading {midi_path} for {hdf_file_path}: {e}")
+            continue
+
+          # only process midi files which include target instrument
+          instruments = [instrument for instrument in pm.instruments if TARGET_INSTRUMENT in instrument.name]
+          if len(instruments) > 0:
+            instrument = instruments[0]
+          else:
+            continue
+
+          # Extract the piano roll for the target instrument
+          piano_roll, seq_len = extract_piano_roll_from_instrument_v2(instrument)
+          if piano_roll is None:
+            continue
+
+          # Resize and append the piano roll to the dataset
+          # Resize the dataset to accommodate the new data
+          hf["piano_rolls"].resize((hf["piano_rolls"].shape[0] + seq_len, NUM_NOTES))
+          hf["piano_rolls"][-seq_len:] = piano_roll  # Add new piano roll
+          # append the length
+          hf["seq_lens"].resize((hf["seq_lens"].shape[0] + 1,))
+          hf["seq_lens"][-1] = seq_len
+
+    # Verify the final dataset
+    print(f"Final dataset shape for {hdf_file_path}:", hf["piano_rolls"].shape)
+
+
+def merge_hdf_files(output_file, hdf_files):
+  """
+  Merge multiple HDF5 files into a single file.
+  """
+  with h5py.File(output_file, "w") as hf_out:
+    hf_out.create_dataset(
+      "piano_rolls",
+      shape=(0, NUM_NOTES, MAX_NUM_TIME_STEPS),
+      maxshape=(None, NUM_NOTES, MAX_NUM_TIME_STEPS),
+      dtype=np.float32
+    )
+    for hdf_file in hdf_files:
+      with h5py.File(hdf_file, "r") as hf_in:
+        piano_rolls = hf_in["piano_rolls"]
+        hf_out["piano_rolls"].resize(
+          (hf_out["piano_rolls"].shape[0] + piano_rolls.shape[0], NUM_NOTES, MAX_NUM_TIME_STEPS))
+        hf_out["piano_rolls"][-piano_rolls.shape[0]:] = piano_rolls[:]
+  print("Merged HDF files into:", output_file)
+
+
+def merge_hdf_files_v2(output_file, hdf_files):
+  """
+  Merge multiple HDF5 files into a single file.
+  """
+  with h5py.File(output_file, "w") as hf_out:
+    hf_out.create_dataset(
+      "piano_rolls",
+      shape=(0, NUM_NOTES),
+      maxshape=(None, NUM_NOTES),
+      dtype=np.float32
+    )
+    hf_out.create_dataset(
+      "seq_lens",
+      shape=(0,),
+      maxshape=(None,),
+      dtype=np.int32
+    )
+
+    for hdf_file in hdf_files:
+      with h5py.File(hdf_file, "r") as hf_in:
+        piano_rolls = hf_in["piano_rolls"]
+        hf_out["piano_rolls"].resize(
+          (hf_out["piano_rolls"].shape[0] + piano_rolls.shape[0], NUM_NOTES)
+        )
+        hf_out["piano_rolls"][-piano_rolls.shape[0]:] = piano_rolls[:]
+        hf_out["seq_lens"].resize(
+          (hf_out["seq_lens"].shape[0] + hf_in["seq_lens"].shape[0],)
+        )
+        hf_out["seq_lens"][-hf_in["seq_lens"].shape[0]:] = hf_in["seq_lens"][:]
+
+  print("Merged HDF files into:", output_file)
+
+
+def build_hdf_file_multi(
+        num_cores: int,
+        build_hdf_file_func: Callable = build_hdf_file_v2,
+        merge_hdf_files_func: Callable = merge_hdf_files_v2
+):
+  if any([os.path.exists(path) for path in (HDF_FILE_PATH,)]):
+    print(f"HDF dataset already exists.")
+    return
+
   assert num_cores <= os.cpu_count(), "Number of cores exceeds the number of available cores."
 
   # Divide the subdirectories among processes
@@ -151,11 +318,13 @@ def build_hdf_file_multi(num_cores: int):
 
   processes = []
   queue = Queue()
+  temp_hdf_files = []
 
   # Create one process per core
   for i, subdirs in enumerate(subdirectories_split):
     temp_hdf_file = f"{DATA_BASE_PATH}/piano_rolls_{i}.h5"
-    process = Process(target=build_hdf_file, args=(temp_hdf_file, subdirs, queue))
+    temp_hdf_files.append(temp_hdf_file)
+    process = Process(target=build_hdf_file_func, args=(temp_hdf_file, subdirs, queue))
     processes.append(process)
     process.start()
 
@@ -163,12 +332,12 @@ def build_hdf_file_multi(num_cores: int):
   for process in processes:
     process.join()
 
-  # # Merge all temporary HDF files
-  # merge_hdf_files(HDF_FILE_PATH, temp_hdf_files)
-  #
-  # # Cleanup temporary files
-  # for temp_file in temp_hdf_files:
-  #   os.remove(temp_file)
+  # Merge all temporary HDF files
+  merge_hdf_files_func(HDF_FILE_PATH, temp_hdf_files)
+
+  # Cleanup temporary files
+  for temp_file in temp_hdf_files:
+    os.remove(temp_file)
 
 
 def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, fs: FluidSynth):
@@ -221,7 +390,7 @@ def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, fs: FluidSyn
   fs.midi_to_audio(f"{file_path}.mid", f'{file_path}.wav')
 
 
-def visualize_piano_roll(piano_roll: np.ndarray):
+def visualize_piano_roll(piano_roll: np.ndarray, i=0):
   # Plot the piano roll
   plt.figure(figsize=(12, 6))
   librosa.display.specshow(
@@ -235,4 +404,5 @@ def visualize_piano_roll(piano_roll: np.ndarray):
   plt.xlabel("Time (frames)")
   plt.ylabel("Note")
   plt.colorbar(label="Velocity")
-  plt.show()
+  # plt.show()
+  plt.savefig(f"piano_rolls_{i}")

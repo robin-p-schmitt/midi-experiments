@@ -1,3 +1,5 @@
+from torch.nn import BCEWithLogitsLoss
+
 from data_utils import (
   download_dataset, unpack_dataset, build_hdf_file, build_hdf_file_multi, HDF_FILE_PATH, DATA_UNPACKED_PATH
 )
@@ -14,15 +16,33 @@ unpack_dataset()
 #   queue=None,
 # )
 
-build_hdf_file_multi(num_cores=6)
+build_hdf_file_multi(num_cores=1)
 
-# model = TransformerDecoderModel(**transformer_v1_config['model_opts'])
+model = TransformerDecoderModel(**transformer_v1_config['model_opts'])
 # train(
 #   model,
 #   alias='transformer_v1',
 #   **transformer_v1_config['train_opts'],
 # )
 #
+# train(
+#   model,
+#   alias='transformer_v1_oclr_lr-1e-4_boosted-mse',
+#   **dict_update_deep(
+#     transformer_v1_config['train_opts'],
+#     {"lr_scheduling": "oclr", "lr": 1e-4, "criterion": boosted_mse},
+#   ),
+# )
+
+train(
+  model,
+  alias='transformer_v1_oclr_lr-1e-4_bce_40-epochs',
+  **dict_update_deep(
+    transformer_v1_config['train_opts'],
+    {"lr_scheduling": "oclr", "lr": 1e-4, "criterion": BCEWithLogitsLoss(), "n_epochs": 40},
+  ),
+)
+
 # train(
 #   model,
 #   alias='transformer_v1_boosted-mse',
