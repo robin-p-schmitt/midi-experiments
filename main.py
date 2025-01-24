@@ -1,53 +1,38 @@
 from torch.nn import BCEWithLogitsLoss
 
 from data_utils import (
-  download_dataset, unpack_dataset, build_hdf_file, build_hdf_file_multi, HDF_FILE_PATH, DATA_UNPACKED_PATH
+  prepare_data
 )
 from models.configs import transformer_v1_config
-from models.transformer import TransformerDecoderModel, train, boosted_mse
+from models.transformer import TransformerDecoderModel, train
 from utils.dict_update import dict_update_deep
 
-download_dataset()
-unpack_dataset()
-# build hdf with single core
-# build_hdf_file(
-#   hdf_file_path=HDF_FILE_PATH,
-#   subdir=DATA_UNPACKED_PATH,
-#   queue=None,
-# )
+prepare_data(dataset_name="maestro", num_workers=6)
+# prepare_data(dataset_name="lakh", num_workers=6)
 
-build_hdf_file_multi(num_cores=1)
+configs = []
 
-model = TransformerDecoderModel(**transformer_v1_config['model_opts'])
-# train(
-#   model,
-#   alias='transformer_v1',
-#   **transformer_v1_config['train_opts'],
-# )
-#
-# train(
-#   model,
-#   alias='transformer_v1_oclr_lr-1e-4_boosted-mse',
-#   **dict_update_deep(
+# configs.append(dict(
+#   alias="lakh_transformer_v1_lr-1e-3_bce_5-epochs_batch-size-256",
+#   model_opts=transformer_v1_config['model_opts'],
+#   train_opts=dict_update_deep(
 #     transformer_v1_config['train_opts'],
-#     {"lr_scheduling": "oclr", "lr": 1e-4, "criterion": boosted_mse},
-#   ),
-# )
+#     {
+#       "lr": 1e-3,
+#       "criterion": BCEWithLogitsLoss(),
+#       "n_epochs": 10,
+#       "batch_size": 512,
+#       "dataset_name": "lakh",
+#       "dataset_fraction": 1.0,
+#     },
+#   )
+# ))
 
-train(
-  model,
-  alias='transformer_v1_oclr_lr-1e-4_bce_40-epochs',
-  **dict_update_deep(
-    transformer_v1_config['train_opts'],
-    {"lr_scheduling": "oclr", "lr": 1e-4, "criterion": BCEWithLogitsLoss(), "n_epochs": 40},
-  ),
-)
+for config in configs:
+  model = TransformerDecoderModel(**config["model_opts"])
 
-# train(
-#   model,
-#   alias='transformer_v1_boosted-mse',
-#   **dict_update_deep(
-#     transformer_v1_config['train_opts'],
-#     {"criterion": boosted_mse},
-#   ),
-# )
+  train(
+    model,
+    alias=config["alias"],
+    **config["train_opts"],
+  )

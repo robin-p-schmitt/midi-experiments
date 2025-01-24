@@ -2,3 +2,6 @@ __pycache__/
 *.pt
 data/
 .idea/
+.ipynb_checkpoints/
+model_checkpoints/
+runs/
