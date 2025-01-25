@@ -4,7 +4,7 @@ import torch
 import h5py
 import numpy as np
 import math
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 from data_utils import (
   FRAMES_PER_BAR,
@@ -15,6 +15,7 @@ from data_utils import (
   LAKH_HDF_FILE_PATH,
   visualize_piano_roll,
   NUM_NOTES,
+  SILENT_IDX,
 )
 
 
@@ -74,6 +75,27 @@ class PianoRollDataset(Dataset):
       self.file = None
 
 
+class PlayedNotesDataset(PianoRollDataset):
+  def __getitem__(self, idx):
+    if self.file is None:
+      self.file = h5py.File(self.hdf5_file, "r")
+
+    hdf_idx, section_idx = self.index_mapper[idx]
+    start_idx = sum(self.file["seq_lens"][:hdf_idx])
+    seq_len = self.file["seq_lens"][hdf_idx]
+    played_notes = self.file["played_notes"][start_idx:start_idx + seq_len]
+
+    played_notes = self.transform(played_notes)[section_idx]
+    seq_len = played_notes.shape[0]
+    sampling_freq = self.file["sampling_freq"][hdf_idx]
+
+    played_notes = torch.tensor(played_notes, dtype=torch.int32)
+    seq_len = torch.tensor(seq_len, dtype=torch.int32)
+    sampling_freq = torch.tensor(sampling_freq, dtype=torch.int32)
+
+    return played_notes, seq_len, sampling_freq
+
+
 # Collate function for dynamic padding
 def collate_fn(batch):
     piano_rolls, seq_lens, sampling_freqs = zip(*batch)
@@ -92,9 +114,11 @@ def worker_init_fn(worker_id):
 
 # taken from https://github.com/yizhouzhao/MusicVAE/blob/master/src/data_utils.py
 class BarTransform:
-  def __init__(self, bars=1, num_notes=88):
+  def __init__(self, bars=1, num_notes=88, use_padding=False, sample_is_categorical: bool = False):
     self.split_size = bars * FRAMES_PER_BAR
     self.num_notes = num_notes
+    self.use_padding = use_padding
+    self.sample_is_categorical = sample_is_categorical
 
   def get_num_sections(self, sample_length: int):
     return math.ceil(sample_length / self.split_size)
@@ -107,12 +131,17 @@ class BarTransform:
     """
     sample_length = sample.shape[0]
 
-    # # Pad the sample with 0's if there's not enough to create equal splits into n bars
-    # leftover = sample_length % self.split_size
-    # if leftover != 0:
-    #   padding_size = self.split_size - leftover
-    #   padding = np.zeros((padding_size, self.num_notes))
-    #   sample = np.append(sample, padding, axis=0)
+    # padding is done in the collate_fn -> we don't need to pad here?
+    # if self.use_padding:
+    #   # Pad the sample with 0's if there's not enough to create equal splits into n bars
+    #   leftover = sample_length % self.split_size
+    #   if leftover != 0:
+    #     padding_size = self.split_size - leftover
+    #     if self.sample_is_categorical:
+    #       padding = np.full((padding_size,), SILENT_IDX)
+    #     else:
+    #       padding = np.zeros((padding_size, self.num_notes))
+    #     sample = np.append(sample, padding, axis=0)
 
     sections = self.get_num_sections(sample_length)
     # Split into X equal sections
@@ -147,15 +176,12 @@ def _get_data_splits_for_training(dataset_size: int, dataset_fraction: float = 1
 
 
 def get_data_loaders_for_training(
-        dataset_name: str,
+        hdf_file_path: str,
         batch_size: int = 32,
         num_workers: int = 4,
         dataset_fraction: float = 1.0,
+        dataset_cls: Callable = PianoRollDataset,
 ):
-  dataset_name = dataset_name.upper()
-  assert dataset_name in VALID_DATASET_NAMES, f"Invalid dataset name: {dataset_name}"
-  hdf_file_path = eval(f"{dataset_name}_HDF_FILE_PATH")
-
   # Fetch dataset size
   with h5py.File(hdf_file_path, "r") as f:
     if "seq_lens" in f:
@@ -167,9 +193,9 @@ def get_data_loaders_for_training(
   train_indices, devtrain_indices, dev_indices = _get_data_splits_for_training(dataset_size, dataset_fraction)
 
   # Create datasets for each split
-  train_dataset = PianoRollDataset(hdf_file_path, indices=train_indices)
-  devtrain_dataset = PianoRollDataset(hdf_file_path, indices=devtrain_indices)
-  dev_dataset = PianoRollDataset(hdf_file_path, indices=dev_indices)
+  train_dataset = dataset_cls(hdf_file_path, indices=train_indices)
+  devtrain_dataset = dataset_cls(hdf_file_path, indices=devtrain_indices)
+  dev_dataset = dataset_cls(hdf_file_path, indices=dev_indices)
 
   # Create DataLoaders
   train_loader = DataLoader(

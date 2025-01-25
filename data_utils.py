@@ -32,7 +32,7 @@ EXAMPLE_PIANO_ROLLS_PATH = os.path.join(DATA_BASE_PATH, 'example_piano_rolls')
 VALID_DATASET_NAMES = ("LAKH", "MAESTRO")
 
 FRAMES_PER_BAR = 16
-NUM_BARS = 16
+NUM_BARS = 4
 MAX_NUM_PROCESSED_FILES = 40_000
 START_NOTE = 21
 NUM_NOTES = 88
@@ -518,11 +518,9 @@ def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, sampling_fre
 
   # Write the MIDI file
   pm.write(f"{file_path}.mid")
-  fs.midi_to_audio(f"{file_path}.mid", f'{file_path}.wav')
-
-  np.set_printoptions(threshold=np.inf)
-  print(piano_roll)
-  exit()
+  # skip the wav file for now because it is not playing any sound for some reason
+  # TODO: fix this
+  # fs.midi_to_audio(f"{file_path}.mid", f'{file_path}.wav')
 
 
 def visualize_piano_roll(piano_roll: np.ndarray, sampling_freq: int, filename: Optional[str] = None):

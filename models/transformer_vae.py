@@ -8,13 +8,14 @@ import os
 import math
 from torch.nn.utils.rnn import pack_padded_sequence
 
-from dataset import get_data_loaders_for_training
+from dataset import get_data_loaders_for_training, PianoRollDataset, PlayedNotesDataset
 from data_utils import (
   visualize_piano_roll,
   FRAMES_PER_BAR,
   VALID_DATASET_NAMES,
-  MAESTRO_HDF_FILE_PATH,
-  LAKH_HDF_FILE_PATH,
+  MAESTRO_MONOPHONIC_HDF_FILE_PATH,
+  LAKH_MONOPHONIC_HDF_FILE_PATH,
+  SILENT_IDX,
 )
 
 MODEL_CHECKPOINTS_PATH = "model_checkpoints"
@@ -40,43 +41,122 @@ class PositionalEncoding(nn.Module):
     return self.pe[:x.size(0)]
 
 
-class TransformerDecoderModel(nn.Module):
+class VAETransformerEncoder(nn.Module):
   def __init__(self, input_dim, embed_dim, num_heads, num_layers, max_time_steps):
-    super(TransformerDecoderModel, self).__init__()
-    self.embedding = nn.Linear(input_dim, embed_dim)
+    super(VAETransformerEncoder, self).__init__()
+    self.embedding = nn.Embedding(input_dim, embed_dim)
     self.positional_encoding = PositionalEncoding(
       d_model=embed_dim,
       max_len=max_time_steps,
     )
 
-    decoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
-    self.transformer_decoder = nn.TransformerEncoder(decoder_layer, num_layers=num_layers)
+    encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
+    self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-    self.output_layer = nn.Linear(embed_dim, input_dim)
+    self.encoder_out = nn.Linear(embed_dim, 2 * embed_dim)
 
   def forward(self, x):
     """
 
-    :param x: input of shape [seq_len, batch_size, input_dim]
+    :param x: input of shape [seq_len + 1, batch_size, input_dim]. The last frame is a special frame which later
+    acts as the hidden representation of the input.
     :return:
     """
     x = self.embedding(x)
     x += self.positional_encoding(x)
-    causal_mask = nn.Transformer.generate_square_subsequent_mask(x.size(0))
-    x = self.transformer_decoder(
-      x,
-      mask=causal_mask,
-      is_causal=True,
+    x = self.transformer_encoder(x)
+    # use the last output as the hidden representation of the input
+    enc_out = x[-1]
+    enc_out = self.encoder_out(enc_out)
+
+    mu, log_var = torch.chunk(enc_out, 2, dim=-1)
+    log_var = F.softplus(log_var)
+    sigma = torch.exp(log_var * 2)
+
+    with torch.no_grad():
+      batch_size = x.size(1)
+      epsilon = torch.randn_like(mu)
+
+    # reparameterization trick to get latent features
+    z = mu + epsilon * sigma
+
+    return z
+
+
+class VAEHierarchicalTransformerDecoder(nn.Module):
+  def __init__(self, d_model, output_dim, num_heads, conductor_num_layers, decoder_num_layers, max_time_steps):
+    super(VAEHierarchicalTransformerDecoder, self).__init__()
+    self.positional_encoding = PositionalEncoding(
+      d_model=d_model,
+      max_len=max_time_steps,
     )
-    x = self.output_layer(x)
+    self.embedding = nn.Embedding(output_dim, d_model)
+
+    decoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=num_heads)
+    self.conductor = nn.TransformerEncoder(decoder_layer, num_layers=conductor_num_layers)
+    self.decoder = nn.TransformerEncoder(decoder_layer, num_layers=decoder_num_layers)
+
+    self.conductor_in = nn.Linear(d_model, d_model)
+
+    self.output_layer = nn.Linear(d_model, output_dim)
+
+  def forward(self, z: torch.Tensor, output_seq_len: int, num_sub_seqs: int, x: Optional[torch.Tensor]):
+    """
+
+    :param z: hidden representation shape [batch_size, input_dim]
+    :param output_seq_len: number of frames of the output (= number of frames of the encoder input)
+    :param num_sub_seqs: chunk the output into num_sub_seqs sub sequences
+    :param x: optional input of shape [output_seq_len, batch_size, input_dim]
+    :return:
+    """
+    z = self.conductor_in(z)
+
+    # create zero tensor to hold the predicted tensor
+    conductor_seq = torch.zeros((num_sub_seqs + 1, *z.size()[1:]), device=z.device)
+    # the first frame is the given hidden representation
+    conductor_seq[0] = z
+    for step in range(1, num_sub_seqs + 1):
+      # add positional encoding to the input
+      conductor_seq_w_pos_enc = conductor_seq[:step] + self.positional_encoding(conductor_seq[:step])
+      # next frame is last output of the transformer
+      conductor_seq[step + 1] = self.transformer_conductor(conductor_seq_w_pos_enc)[-1]
+
+    conductor_seq = conductor_seq[1:]  # [num_sub_seqs, batch_size, d_model]
+    conductor_seq = conductor_seq.unsqueeze(0)  # [1, num_sub_seqs, batch_size, d_model]
+
+    if x:
+      x = self.embedding(x)  # [output_seq_len, batch_size, d_model]
+      # chunk the output into num_sub_seqs sub sequences which are processed independently
+      x_chunked, _ = torch.chunk(x, num_sub_seqs, dim=0)  # [num_sub_seqs, sub_seq_len, batch_size, d_model]
+      x_chunked = torch.permute(x_chunked, [1, 0, 2, 3])  # [sub_seq_len, num_sub_seqs, batch_size, d_model]
+
+      # for each sub sequence, get the last note from the previous sub sequence
+      # for the first sub sequence, use a zero vector
+      context_notes =x_chunked[-1]  # [num_sub_seqs, batch_size, d_model]
+      context_notes = torch.cat(
+        (torch.zeros(1, *context_notes.size()[1:]), context_notes),
+        dim=0
+      )[:-1]  # [num_sub_seqs, batch_size, d_model]
+
+      # concatenate the conductor sequence with the input
+      x_shifted = torch.cat((conductor_seq, x_chunked), dim=0)  # [1 + sub_seq_len, num_sub_seqs, batch_size, d_model]
+      x_shifted = x_shifted[:-1]  # [sub_seq_len, num_sub_seqs, batch_size, d_model]
+      x_shifted += self.positional_encoding(x_shifted)
+      causal_mask = nn.Transformer.generate_square_subsequent_mask(x.size(0))
+      x = self.transformer_decoder(
+        x,
+        mask=causal_mask,
+        is_causal=True,
+      )
+      x = self.output_layer(x)
 
     return x
 
 
 def calc_model_output_and_loss(
-        piano_rolls: torch.Tensor,
+        played_notes: torch.Tensor,
         seq_lens: torch.Tensor,
-        model: TransformerDecoderModel,
+        model: VAETransformerEncoder,
         criterion: Callable,
         optimizer: torch.optim.Optimizer,
         train_mode: bool,
@@ -84,7 +164,7 @@ def calc_model_output_and_loss(
 ):
   """
 
-  :param piano_rolls: input of shape [seq_len, batch_size, input_dim]
+  :param played_notes: input of shape [seq_len, batch_size]
   :param seq_lens:
   :param model:
   :param criterion:
@@ -98,12 +178,17 @@ def calc_model_output_and_loss(
   else:
     model.eval()
 
-  # shift right by 1
-  piano_rolls_shifted = F.pad(piano_rolls, (0, 0, 0, 0, 1, 0))[:-1]  # [seq_len, batch_size, input_dim]
-  outputs = model(piano_rolls_shifted)
+  # append special idx. in this frame, the transformer encoder should store the hidden representation z
+  # from which the decoder should reconstruct the original input sequence
+  played_notes_ext = torch.cat(
+    (played_notes, played_notes[-1].unsqueeze(0)),
+  )
+  played_notes_ext = played_notes_ext.scatter(0, index=seq_lens.to(torch.int64).unsqueeze(0), value=SILENT_IDX + 1)
+
+  outputs = model(played_notes_ext)
 
   piano_rolls_packed = pack_padded_sequence(
-    piano_rolls, seq_lens, batch_first=False, enforce_sorted=False)
+    played_notes, seq_lens, batch_first=False, enforce_sorted=False)
   output_packed = pack_padded_sequence(
     outputs, seq_lens, batch_first=False, enforce_sorted=False)
 
@@ -120,7 +205,7 @@ def calc_model_output_and_loss(
 
 
 def train(
-        model: TransformerDecoderModel,
+        model: VAETransformerEncoder,
         n_epochs: int,
         lr: float,
         batch_size: int,
@@ -133,9 +218,9 @@ def train(
         load_checkpoint: Optional[str] = None,
 ):
   checkpoint_path = f"{MODEL_CHECKPOINTS_PATH}/{alias}"
-  if os.path.exists(checkpoint_path):
-    print(f"Checkpoint found at {checkpoint_path}. Skipping training of {alias}.")
-    return
+  # if os.path.exists(checkpoint_path):
+  #   print(f"Checkpoint found at {checkpoint_path}. Skipping training of {alias}.")
+  #   return
 
   os.makedirs(checkpoint_path, exist_ok=True)
   print(f"Training {alias}...")
@@ -153,12 +238,13 @@ def train(
 
   dataset_name = dataset_name.upper()
   assert dataset_name in VALID_DATASET_NAMES, f"Invalid dataset name: {dataset_name}"
-  hdf_file_path = eval(f"{dataset_name}_HDF_FILE_PATH")
+  hdf_file_path = eval(f"{dataset_name}_MONOPHONIC_HDF_FILE_PATH")
 
   train_loader, devtrain_loader, dev_loader = get_data_loaders_for_training(
     hdf_file_path=hdf_file_path,
     batch_size=batch_size,
     dataset_fraction=dataset_fraction,
+    dataset_cls=PlayedNotesDataset,
   )
 
   if lr_scheduling:
@@ -195,11 +281,12 @@ def train(
         model.eval()
 
       running_loss = 0.0
-      for batch_idx, (piano_rolls, seq_lens, _) in enumerate(data_loader):
-        piano_rolls = piano_rolls.to(device).transpose(0, 1)  # [seq_len, batch_size, input_dim]
+      for batch_idx, (played_notes, seq_lens, _) in enumerate(data_loader):
+
+        played_notes = played_notes.to(device).transpose(0, 1)  # [seq_len, batch_size]
         with torch.set_grad_enabled(train_mode):
           outputs, loss, piano_rolls_shifted = calc_model_output_and_loss(
-            piano_rolls,
+            played_notes,
             model=model,
             criterion=criterion,
             optimizer=optimizer,
@@ -257,7 +344,7 @@ def train(
 
 
 def test(
-        model: TransformerDecoderModel,
+        model: VAETransformerEncoder,
         checkpoint_path: str,
         alias: str,
         criterion: Callable,
