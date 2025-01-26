@@ -76,6 +76,10 @@ class PianoRollDataset(Dataset):
 
 
 class PlayedNotesDataset(PianoRollDataset):
+  def __init__(self, hdf5_file, indices=None):
+    super().__init__(hdf5_file, indices)
+    self.transform = BarTransform(bars=NUM_BARS, num_notes=NUM_NOTES, sample_is_categorical=True, use_padding=True)
+
   def __getitem__(self, idx):
     if self.file is None:
       self.file = h5py.File(self.hdf5_file, "r")
@@ -89,7 +93,7 @@ class PlayedNotesDataset(PianoRollDataset):
     seq_len = played_notes.shape[0]
     sampling_freq = self.file["sampling_freq"][hdf_idx]
 
-    played_notes = torch.tensor(played_notes, dtype=torch.int32)
+    played_notes = torch.tensor(played_notes, dtype=torch.long)
     seq_len = torch.tensor(seq_len, dtype=torch.int32)
     sampling_freq = torch.tensor(sampling_freq, dtype=torch.int32)
 
@@ -132,16 +136,16 @@ class BarTransform:
     sample_length = sample.shape[0]
 
     # padding is done in the collate_fn -> we don't need to pad here?
-    # if self.use_padding:
-    #   # Pad the sample with 0's if there's not enough to create equal splits into n bars
-    #   leftover = sample_length % self.split_size
-    #   if leftover != 0:
-    #     padding_size = self.split_size - leftover
-    #     if self.sample_is_categorical:
-    #       padding = np.full((padding_size,), SILENT_IDX)
-    #     else:
-    #       padding = np.zeros((padding_size, self.num_notes))
-    #     sample = np.append(sample, padding, axis=0)
+    if self.use_padding:
+      # Pad the sample with 0's if there's not enough to create equal splits into n bars
+      leftover = sample_length % self.split_size
+      if leftover != 0:
+        padding_size = self.split_size - leftover
+        if self.sample_is_categorical:
+          padding = np.full((padding_size,), SILENT_IDX)
+        else:
+          padding = np.zeros((padding_size, self.num_notes))
+        sample = np.append(sample, padding, axis=0)
 
     sections = self.get_num_sections(sample_length)
     # Split into X equal sections

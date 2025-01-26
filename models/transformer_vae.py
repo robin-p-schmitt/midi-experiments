@@ -16,6 +16,7 @@ from data_utils import (
   MAESTRO_MONOPHONIC_HDF_FILE_PATH,
   LAKH_MONOPHONIC_HDF_FILE_PATH,
   SILENT_IDX,
+  NUM_BARS
 )
 
 MODEL_CHECKPOINTS_PATH = "model_checkpoints"
@@ -41,19 +42,47 @@ class PositionalEncoding(nn.Module):
     return self.pe[:x.size(0)]
 
 
+class VAEModel(nn.Module):
+  def __init__(self, input_dim, output_dim, d_model, num_heads, num_layers, max_time_steps):
+    super(VAEModel, self).__init__()
+
+    self.encoder = VAETransformerEncoder(
+      input_dim=input_dim,
+      model_dim=d_model,
+      num_heads=num_heads,
+      num_layers=num_layers,
+      max_time_steps=max_time_steps,
+    )
+
+    self.decoder = VAEHierarchicalTransformerDecoder(
+      output_dim=output_dim,
+      d_model=d_model,
+      num_heads=num_heads,
+      conductor_num_layers=num_layers,
+      decoder_num_layers=num_layers,
+      max_time_steps=max_time_steps,
+    )
+
+  def encode(self, x):
+    return self.encoder(x)
+
+  def decode(self, z, output_seq_len, num_sub_seqs, x=None):
+    return self.decoder(z, output_seq_len, num_sub_seqs, x)
+
+
 class VAETransformerEncoder(nn.Module):
-  def __init__(self, input_dim, embed_dim, num_heads, num_layers, max_time_steps):
+  def __init__(self, input_dim, model_dim, num_heads, num_layers, max_time_steps):
     super(VAETransformerEncoder, self).__init__()
-    self.embedding = nn.Embedding(input_dim, embed_dim)
+    self.embedding = nn.Embedding(input_dim, model_dim)
     self.positional_encoding = PositionalEncoding(
-      d_model=embed_dim,
+      d_model=model_dim,
       max_len=max_time_steps,
     )
 
-    encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
+    encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=num_heads)
     self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-    self.encoder_out = nn.Linear(embed_dim, 2 * embed_dim)
+    self.encoder_out = nn.Linear(model_dim, 2 * model_dim)
 
   def forward(self, x):
     """
@@ -80,7 +109,7 @@ class VAETransformerEncoder(nn.Module):
     # reparameterization trick to get latent features
     z = mu + epsilon * sigma
 
-    return z
+    return z, mu, log_var
 
 
 class VAEHierarchicalTransformerDecoder(nn.Module):
@@ -112,51 +141,63 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
     z = self.conductor_in(z)
 
     # create zero tensor to hold the predicted tensor
-    conductor_seq = torch.zeros((num_sub_seqs + 1, *z.size()[1:]), device=z.device)
+    conductor_seq = torch.zeros((num_sub_seqs + 1, *z.size()), device=z.device)
     # the first frame is the given hidden representation
     conductor_seq[0] = z
     for step in range(1, num_sub_seqs + 1):
       # add positional encoding to the input
       conductor_seq_w_pos_enc = conductor_seq[:step] + self.positional_encoding(conductor_seq[:step])
       # next frame is last output of the transformer
-      conductor_seq[step + 1] = self.transformer_conductor(conductor_seq_w_pos_enc)[-1]
+      conductor_seq[step] = self.conductor(conductor_seq_w_pos_enc)[-1]
 
     conductor_seq = conductor_seq[1:]  # [num_sub_seqs, batch_size, d_model]
     conductor_seq = conductor_seq.unsqueeze(0)  # [1, num_sub_seqs, batch_size, d_model]
 
-    if x:
+    if x is not None:
       x = self.embedding(x)  # [output_seq_len, batch_size, d_model]
       # chunk the output into num_sub_seqs sub sequences which are processed independently
-      x_chunked, _ = torch.chunk(x, num_sub_seqs, dim=0)  # [num_sub_seqs, sub_seq_len, batch_size, d_model]
-      x_chunked = torch.permute(x_chunked, [1, 0, 2, 3])  # [sub_seq_len, num_sub_seqs, batch_size, d_model]
+      sub_seq_len = output_seq_len // num_sub_seqs
+      x = torch.reshape(x, [sub_seq_len, num_sub_seqs, *x.size()[1:]])  # [sub_seq_len, num_sub_seqs, batch_size, d_model]
 
       # for each sub sequence, get the last note from the previous sub sequence
       # for the first sub sequence, use a zero vector
-      context_notes =x_chunked[-1]  # [num_sub_seqs, batch_size, d_model]
+      context_notes =x[-1]  # [num_sub_seqs, batch_size, d_model]
       context_notes = torch.cat(
         (torch.zeros(1, *context_notes.size()[1:]), context_notes),
         dim=0
       )[:-1]  # [num_sub_seqs, batch_size, d_model]
+      context_notes = context_notes.unsqueeze(0)  # [1, num_sub_seqs, batch_size, d_model]
 
       # concatenate the conductor sequence with the input
-      x_shifted = torch.cat((conductor_seq, x_chunked), dim=0)  # [1 + sub_seq_len, num_sub_seqs, batch_size, d_model]
-      x_shifted = x_shifted[:-1]  # [sub_seq_len, num_sub_seqs, batch_size, d_model]
-      x_shifted += self.positional_encoding(x_shifted)
-      causal_mask = nn.Transformer.generate_square_subsequent_mask(x.size(0))
-      x = self.transformer_decoder(
-        x,
+      x_ext = torch.cat((conductor_seq, context_notes, x), dim=0)  # [2 + sub_seq_len, num_sub_seqs, batch_size, d_model]
+      # remove the last frame of the input (shift right)
+      x_ext = x_ext[:-1]  # [1 + sub_seq_len, num_sub_seqs, batch_size, d_model]
+      # combine the batch dimension with the num_sub_seqs dimension
+      x_ext = torch.reshape(x_ext, [1 + sub_seq_len, num_sub_seqs * x.size(2), x.size(3)])  # [1 + sub_seq_len, num_sub_seqs * batch_size, d_model]
+
+      x_ext += self.positional_encoding(x_ext)
+      causal_mask = nn.Transformer.generate_square_subsequent_mask(x_ext.size(0))
+      outputs = self.decoder(
+        x_ext,
         mask=causal_mask,
         is_causal=True,
       )
-      x = self.output_layer(x)
+      outputs = outputs[1:]  # [sub_seq_len, num_sub_seqs * batch_size, d_model]
+      outputs = torch.reshape(
+        outputs,
+        [sub_seq_len, num_sub_seqs, x.size(2), x.size(3)]
+      )  # [sub_seq_len, num_sub_seqs, batch_size, d_model]
+      outputs = torch.reshape(outputs, [output_seq_len, x.size(2), x.size(3)])  # [output_seq_len, batch_size, d_model]
+    else:
+      raise NotImplementedError
 
-    return x
+    return self.output_layer(outputs)
 
 
 def calc_model_output_and_loss(
         played_notes: torch.Tensor,
         seq_lens: torch.Tensor,
-        model: VAETransformerEncoder,
+        model: VAEModel,
         criterion: Callable,
         optimizer: torch.optim.Optimizer,
         train_mode: bool,
@@ -185,14 +226,20 @@ def calc_model_output_and_loss(
   )
   played_notes_ext = played_notes_ext.scatter(0, index=seq_lens.to(torch.int64).unsqueeze(0), value=SILENT_IDX + 1)
 
-  outputs = model(played_notes_ext)
+  z, mu, log_var = model.encode(x=played_notes_ext)
+  outputs = model.decode(z=z, output_seq_len=played_notes.size(0), num_sub_seqs=NUM_BARS, x=played_notes)
 
-  piano_rolls_packed = pack_padded_sequence(
+  played_notes_packed = pack_padded_sequence(
     played_notes, seq_lens, batch_first=False, enforce_sorted=False)
   output_packed = pack_padded_sequence(
     outputs, seq_lens, batch_first=False, enforce_sorted=False)
 
-  loss = criterion(output_packed.data, piano_rolls_packed.data)
+  recon_loss = criterion(output_packed.data, played_notes_packed.data)
+  kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
+  kl_loss = torch.mean(kl_loss)
+  kl_loss *= 0.005
+
+  loss = recon_loss + kl_loss
 
   if train_mode:
     optimizer.zero_grad()
@@ -201,11 +248,11 @@ def calc_model_output_and_loss(
     if scheduler:
       scheduler.step()
 
-  return outputs, loss, piano_rolls_shifted
+  return outputs, loss, recon_loss, kl_loss
 
 
 def train(
-        model: VAETransformerEncoder,
+        model: VAEModel,
         n_epochs: int,
         lr: float,
         batch_size: int,
@@ -285,7 +332,7 @@ def train(
 
         played_notes = played_notes.to(device).transpose(0, 1)  # [seq_len, batch_size]
         with torch.set_grad_enabled(train_mode):
-          outputs, loss, piano_rolls_shifted = calc_model_output_and_loss(
+          outputs, loss, recon_loss, kl_loss = calc_model_output_and_loss(
             played_notes,
             model=model,
             criterion=criterion,
@@ -308,8 +355,8 @@ def train(
         # mem_info = torch.cuda.mem_get_info(device)
         print(
           f"Epoch {epoch + 1}/{n_epochs}, Batch {batch_idx + 1} - "
-          f"{data_alias} Loss: {loss.item():.4f} - "
-          # f"Free/Total Memory: {(mem / 1024 ** 3 for mem in mem_info)} GB"
+          f"{data_alias} Total loss: {loss.item():.4f}, "
+          f"Recon loss: {recon_loss.item():.4f}, KL loss: {kl_loss.item():.4f}"
         )
 
       avg_loss = running_loss / len(data_loader)
@@ -344,7 +391,7 @@ def train(
 
 
 def test(
-        model: VAETransformerEncoder,
+        model: VAEModel,
         checkpoint_path: str,
         alias: str,
         criterion: Callable,

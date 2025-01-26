@@ -30,15 +30,14 @@ configs = []
 # ))
 
 configs.append(dict(
-  alias="maestro_transformer_vae_v1_lr-1e-3_bce_5-epochs_batch-size-256",
+  alias="maestro_transformer_vae_v1_lr-1e-3_20-epochs_batch-size-128",
   model_opts=transformer_vae_v1_config['model_opts'],
   train_opts=dict_update_deep(
     transformer_vae_v1_config['train_opts'],
     {
       "lr": 1e-3,
-      "criterion": BCEWithLogitsLoss(),
-      "n_epochs": 10,
-      "batch_size": 32,
+      "n_epochs": 20,
+      "batch_size": 128,
       "dataset_name": "maestro",
       "dataset_fraction": 1.0,
     },
