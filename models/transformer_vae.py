@@ -163,7 +163,7 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
       # for the first sub sequence, use a zero vector
       context_notes =x[-1]  # [num_sub_seqs, batch_size, d_model]
       context_notes = torch.cat(
-        (torch.zeros(1, *context_notes.size()[1:]), context_notes),
+        (torch.zeros(1, *context_notes.size()[1:], device=context_notes.device), context_notes),
         dim=0
       )[:-1]  # [num_sub_seqs, batch_size, d_model]
       context_notes = context_notes.unsqueeze(0)  # [1, num_sub_seqs, batch_size, d_model]
@@ -224,7 +224,7 @@ def calc_model_output_and_loss(
   played_notes_ext = torch.cat(
     (played_notes, played_notes[-1].unsqueeze(0)),
   )
-  played_notes_ext = played_notes_ext.scatter(0, index=seq_lens.to(torch.int64).unsqueeze(0), value=SILENT_IDX + 1)
+  played_notes_ext = played_notes_ext.scatter(0, index=seq_lens.to(played_notes.device).to(torch.int64).unsqueeze(0), value=SILENT_IDX + 1)
 
   z, mu, log_var = model.encode(x=played_notes_ext)
   outputs = model.decode(z=z, output_seq_len=played_notes.size(0), num_sub_seqs=NUM_BARS, x=played_notes)
