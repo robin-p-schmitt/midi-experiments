@@ -38,6 +38,7 @@ transformer_vae_v1_config = dict(
   ),
   train_opts=dict(
     train_func=train_vae_transformer,
+    dataset_name="maestro",
     batch_size=256,
     n_epochs=10,
     beta=1.0,
@@ -70,6 +71,7 @@ transformer_vae_v3_config = dict_update_deep(
   {
     "train_opts.beta_scheduler_opts": dict(
       cls="CyclicAnnealingScheduler",
+      M=2,
     )
   }
 )

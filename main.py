@@ -5,7 +5,7 @@ from torch.nn import BCEWithLogitsLoss
 from data_utils import (
   prepare_data
 )
-from models.configs import transformer_v1_config, transformer_vae_v1_config, transformer_vae_v2_config
+from models.configs import transformer_v1_config, transformer_vae_v1_config, transformer_vae_v2_config, transformer_vae_v3_config
 from models.transformer import TransformerDecoderModel, train
 from models.transformer_vae import VAETransformerEncoder
 from utils.dict_update import dict_update_deep
@@ -28,10 +28,7 @@ configs.append(dict(
     transformer_vae_v1_config['train_opts'],
     {
       "n_epochs": 50,
-      "batch_size": 256,
-      "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "beta": 1.0,
     },
   )
 ))
@@ -48,10 +45,7 @@ configs.append(dict(
     transformer_vae_v1_config['train_opts'],
     {
       "n_epochs": 50,
-      "batch_size": 256,
-      "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "beta": 1.0,
       "optimizer_opts.weight_decay": 1e-6,
     },
   )
@@ -69,10 +63,7 @@ configs.append(dict(
     transformer_vae_v1_config['train_opts'],
     {
       "n_epochs": 50,
-      "batch_size": 256,
-      "dataset_name": "maestro",
       "dataset_fraction": 0.2,
-      "beta": 1.0,
     },
   )
 ))
@@ -89,10 +80,7 @@ configs.append(dict(
     transformer_vae_v2_config['train_opts'],
     {
       "n_epochs": 50,
-      "batch_size": 256,
-      "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "beta": 1.0,
     },
   )
 ))
@@ -104,10 +92,7 @@ configs.append(dict(
     transformer_vae_v2_config['train_opts'],
     {
       "n_epochs": 50,
-      "batch_size": 256,
-      "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "beta": 1.0,
       "optimizer_opts.weight_decay": 1e-4,
     },
   )
@@ -120,10 +105,7 @@ configs.append(dict(
     transformer_vae_v2_config['train_opts'],
     {
       "n_epochs": 50,
-      "batch_size": 256,
-      "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "beta": 1.0,
       "optimizer_opts.weight_decay": 1e-3,
     },
   )
@@ -136,10 +118,7 @@ configs.append(dict(
     transformer_vae_v2_config['train_opts'],
     {
       "n_epochs": 50,
-      "batch_size": 256,
-      "dataset_name": "maestro",
       "dataset_fraction": 0.2,
-      "beta": 1.0,
       "optimizer_opts.weight_decay": 1e-3,
     },
   )
@@ -152,14 +131,39 @@ configs.append(dict(
     transformer_vae_v2_config['train_opts'],
     {
       "n_epochs": 50,
-      "batch_size": 256,
-      "dataset_name": "maestro",
       "dataset_fraction": 0.2,
-      "beta": 1.0,
       "optimizer_opts.weight_decay": 5e-4,
     },
   )
 ))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v3_50-epochs_0.2-data-fraction_wd-5e-4_load-after-50",
+  model_opts=transformer_vae_v3_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v3_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "dataset_fraction": 0.2,
+      "optimizer_opts.weight_decay": 5e-4,
+      "load_checkpoint": "/content/model_checkpoints/maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-5e-4/model_epoch_50.pt",
+    },
+  )
+))
+
+# configs.append(dict(
+#   alias="maestro_transformer_vae_v2_10-epochs_0.2-data-fraction_wd-5e-4_load-after-50",
+#   model_opts=transformer_vae_v2_config['model_opts'],
+#   train_opts=dict_update_deep(
+#     transformer_vae_v2_config['train_opts'],
+#     {
+#       "n_epochs": 10,
+#       "dataset_fraction": 0.2,
+#       "optimizer_opts.weight_decay": 5e-4,
+#       "load_checkpoint": "/content/model_checkpoints/maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-5e-4/model_epoch_50.pt",
+#     },
+#   )
+# ))
 
 for config in configs:
   config = copy.deepcopy(config)
