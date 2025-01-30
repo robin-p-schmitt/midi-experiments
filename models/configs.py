@@ -4,7 +4,7 @@ from torch.nn import MSELoss, BCEWithLogitsLoss, CrossEntropyLoss
 
 from data_utils import NUM_NOTES, FRAMES_PER_BAR, NUM_BARS
 from models.transformer import TransformerDecoderModel, train as train_transformer
-from models.transformer_vae import VAEModel, train as train_vae_transformer, CyclicAnnealingScheduler
+from models.transformer_vae import VAEModel, train as train_vae_transformer
 from utils.dict_update import dict_update_deep
 
 
@@ -40,7 +40,7 @@ transformer_vae_v1_config = dict(
     train_func=train_vae_transformer,
     batch_size=256,
     n_epochs=10,
-    kl_loss_scale=1.0,
+    beta=1.0,
     criterion=CrossEntropyLoss(),
     lr_scheduling_opts=dict(
       cls="ExponentialLR",
@@ -69,7 +69,7 @@ transformer_vae_v3_config = dict_update_deep(
   transformer_vae_v2_config,
   {
     "train_opts.beta_scheduler_opts": dict(
-      cls=CyclicAnnealingScheduler,
+      cls="CyclicAnnealingScheduler",
     )
   }
 )

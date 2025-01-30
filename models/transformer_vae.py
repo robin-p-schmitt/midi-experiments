@@ -11,6 +11,7 @@ import math
 from torch.nn.utils.rnn import pack_padded_sequence
 from torch.optim.lr_scheduler import OneCycleLR, ExponentialLR
 from torch.optim import Adam
+import matplotlib.pyplot as plt
 
 from dataset import get_data_loaders_for_training, PianoRollDataset, PlayedNotesDataset
 from data_utils import (
@@ -285,7 +286,7 @@ def calc_model_output_and_loss(
         optimizer: torch.optim.Optimizer,
         train_mode: bool,
         scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
-        kl_loss_scale: Optional[float] = 0.01,
+        beta: Optional[float] = 0.01,
         min_lr: Optional[float] = None,
         beta_scheduler: Optional[CyclicAnnealingScheduler] = None,
 ):
@@ -298,7 +299,7 @@ def calc_model_output_and_loss(
   :param optimizer:
   :param train_mode:
   :param scheduler:
-  :param kl_loss_scale:
+  :param beta:
   :param min_lr:
   :param beta_scheduler:
   :return:
@@ -326,7 +327,7 @@ def calc_model_output_and_loss(
   recon_loss = criterion(output_packed.data, played_notes_packed.data)
   kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
   kl_loss = torch.mean(kl_loss)
-  kl_loss *= kl_loss_scale  # kl weight
+  kl_loss *= beta  # kl weight
 
   loss = recon_loss + kl_loss
 
@@ -351,7 +352,7 @@ def train(
         dataset_name: str = "maestro",
         dataset_fraction: float = 1.0,
         load_checkpoint: Optional[str] = None,
-        kl_loss_scale: float = 0.01,
+        beta: float = 0.01,
         beta_scheduler_opts: Optional[Dict] = None,
 ):
   checkpoint_path = f"{MODEL_CHECKPOINTS_PATH}/{alias}"
@@ -367,7 +368,7 @@ def train(
   print(f"Optimizer: {optimizer_opts}")
   print(f"LR scheduling: {lr_scheduling_opts}")
   print(f"Criterion: {criterion}")
-  print(f"KL loss scale: {kl_loss_scale}")
+  print(f"KL loss scale: {beta if beta_scheduler_opts is None else beta_scheduler_opts}")
 
   device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
   print(f"Using device: {device}")
@@ -404,8 +405,10 @@ def train(
     beta_scheduler_cls = eval(beta_scheduler_opts.pop("cls"))
     assert beta_scheduler_cls == CyclicAnnealingScheduler, "Only CyclicAnnealingScheduler is supported"
     beta_scheduler = beta_scheduler_cls(**beta_scheduler_opts)
+    beta_scheduler.num_steps = len(train_loader) * n_epochs
   else:
     beta_scheduler = None
+  betas = []
 
   # Initialize TensorBoard writer
   writer = SummaryWriter(log_dir=f"./runs/{alias}")
@@ -431,13 +434,13 @@ def train(
       running_rec_loss = 0.0
       running_kl_loss = 0.0
       num_batches = len(data_loader)
-      beta_scheduler.num_steps = num_batches
       for batch_idx, (played_notes, seq_lens, _) in enumerate(data_loader, start=1):
         if beta_scheduler:
           if train_mode:
-            kl_loss_scale = beta_scheduler(batch_idx)
+            beta = beta_scheduler(batch_idx + (epoch - 1) * num_batches)
+            betas.append(beta)
           else:
-            kl_loss_scale = 1.0
+            beta = 1.0
 
         played_notes = played_notes.to(device).transpose(0, 1)  # [seq_len, batch_size]
         with torch.set_grad_enabled(train_mode):
@@ -449,7 +452,7 @@ def train(
             scheduler=scheduler,
             train_mode=train_mode,
             seq_lens=seq_lens,
-            kl_loss_scale=kl_loss_scale,
+            beta=beta,
             min_lr=min_lr,
             beta_scheduler=beta_scheduler,
           )
@@ -470,7 +473,7 @@ def train(
           f"Epoch {epoch}/{n_epochs}, Batch {batch_idx} - "
           f"{data_alias} Total loss: {loss.item():.4f}, "
           f"Recon loss: {recon_loss.item():.4f}, "
-          f"KL loss: {kl_loss.item():.4f} - KL weight: {kl_loss_scale:.4f}"
+          f"KL loss: {kl_loss.item():.4f} - KL weight: {beta:.4f}"
         )
 
       avg_kl_loss = running_kl_loss / num_batches
@@ -507,6 +510,11 @@ def train(
 
   with open(training_stats_file_path, "w") as f:
     json.dump(training_stats, f, indent=2)
+
+  if len(betas) != 0:
+    plt.plot(betas)
+    plt.savefig(f"{checkpoint_path}/betas.png")
+    plt.close()
 
   best_dev_checkpoint_path = f"{checkpoint_path}/model_epoch_{best_dev_epoch}.pt"
   # test(

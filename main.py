@@ -31,7 +31,7 @@ configs.append(dict(
       "batch_size": 256,
       "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "kl_loss_scale": 1.0,
+      "beta": 1.0,
     },
   )
 ))
@@ -51,7 +51,7 @@ configs.append(dict(
       "batch_size": 256,
       "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "kl_loss_scale": 1.0,
+      "beta": 1.0,
       "optimizer_opts.weight_decay": 1e-6,
     },
   )
@@ -72,7 +72,7 @@ configs.append(dict(
       "batch_size": 256,
       "dataset_name": "maestro",
       "dataset_fraction": 0.2,
-      "kl_loss_scale": 1.0,
+      "beta": 1.0,
     },
   )
 ))
@@ -92,7 +92,7 @@ configs.append(dict(
       "batch_size": 256,
       "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "kl_loss_scale": 1.0,
+      "beta": 1.0,
     },
   )
 ))
@@ -107,7 +107,7 @@ configs.append(dict(
       "batch_size": 256,
       "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "kl_loss_scale": 1.0,
+      "beta": 1.0,
       "optimizer_opts.weight_decay": 1e-4,
     },
   )
@@ -123,7 +123,7 @@ configs.append(dict(
       "batch_size": 256,
       "dataset_name": "maestro",
       "dataset_fraction": 0.1,
-      "kl_loss_scale": 1.0,
+      "beta": 1.0,
       "optimizer_opts.weight_decay": 1e-3,
     },
   )
@@ -139,7 +139,7 @@ configs.append(dict(
       "batch_size": 256,
       "dataset_name": "maestro",
       "dataset_fraction": 0.2,
-      "kl_loss_scale": 1.0,
+      "beta": 1.0,
       "optimizer_opts.weight_decay": 1e-3,
     },
   )
@@ -155,7 +155,7 @@ configs.append(dict(
       "batch_size": 256,
       "dataset_name": "maestro",
       "dataset_fraction": 0.2,
-      "kl_loss_scale": 1.0,
+      "beta": 1.0,
       "optimizer_opts.weight_decay": 5e-4,
     },
   )
