@@ -200,6 +200,19 @@ configs.append(dict(
   )
 ))
 
+configs.append(dict(
+  alias="maestro_transformer_vae_v3_50-epochs_0.2-data-fraction_wd-2e-4",
+  model_opts=transformer_vae_v3_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v3_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "dataset_fraction": 0.2,
+      "optimizer_opts.weight_decay": 2e-4,
+    },
+  )
+))
+
 # configs.append(dict(
 #   alias="maestro_transformer_vae_v3_50-epochs_0.2-data-fraction_wd-5e-4_load-after-50",
 #   model_opts=transformer_vae_v3_config['model_opts'],
