@@ -47,7 +47,16 @@ class PositionalEncoding(nn.Module):
 
 
 class VAEModel(nn.Module):
-  def __init__(self, input_dim, output_dim, d_model, num_heads, num_layers, max_time_steps):
+  def __init__(
+          self,
+          input_dim,
+          output_dim,
+          d_model,
+          num_heads,
+          num_layers,
+          max_time_steps,
+          decoder_opts: Optional[Dict] = None,
+  ):
     super(VAEModel, self).__init__()
 
     self.encoder = VAETransformerEncoder(
@@ -58,6 +67,8 @@ class VAEModel(nn.Module):
       max_time_steps=max_time_steps,
     )
 
+    if decoder_opts is None:
+      decoder_opts = {}
     self.decoder = VAEHierarchicalTransformerDecoder(
       output_dim=output_dim,
       d_model=d_model,
@@ -65,6 +76,7 @@ class VAEModel(nn.Module):
       conductor_num_layers=num_layers,
       decoder_num_layers=num_layers,
       max_time_steps=max_time_steps,
+      **decoder_opts,
     )
 
   def encode(self, x):
@@ -117,7 +129,17 @@ class VAETransformerEncoder(nn.Module):
 
 
 class VAEHierarchicalTransformerDecoder(nn.Module):
-  def __init__(self, d_model, output_dim, num_heads, conductor_num_layers, decoder_num_layers, max_time_steps):
+  def __init__(
+          self,
+          d_model,
+          output_dim,
+          num_heads,
+          conductor_num_layers,
+          decoder_num_layers,
+          max_time_steps,
+          conductor_in_act=None,
+          transform_conductor_out=False,
+  ):
     super(VAEHierarchicalTransformerDecoder, self).__init__()
     self.positional_encoding = PositionalEncoding(
       d_model=d_model,
@@ -130,6 +152,17 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
     self.decoder = nn.TransformerEncoder(decoder_layer, num_layers=decoder_num_layers)
 
     self.conductor_in = nn.Linear(d_model, d_model)
+    if conductor_in_act:
+      self.conductor_in_act = conductor_in_act
+    else:
+      self.conductor_in_act = lambda x: x
+
+    if transform_conductor_out:
+      self.conductor_out = nn.Linear(d_model, d_model)
+      self.conductor_out_act = torch.tanh
+    else:
+      self.conductor_out = lambda x: x
+      self.conductor_out_act = lambda x: x
 
     self.output_layer = nn.Linear(d_model, output_dim)
 
@@ -143,6 +176,7 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
     :return:
     """
     z = self.conductor_in(z)
+    z = self.conductor_in_act(z)
 
     # create zero tensor to hold the predicted tensor
     conductor_seq = torch.zeros((num_sub_seqs + 1, *z.size()), device=z.device)
@@ -156,6 +190,8 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
 
     conductor_seq = conductor_seq[1:]  # [num_sub_seqs, batch_size, d_model]
     conductor_seq = conductor_seq.unsqueeze(0)  # [1, num_sub_seqs, batch_size, d_model]
+    conductor_seq = self.conductor_out(conductor_seq)
+    conductor_seq = self.conductor_out_act(conductor_seq)
 
     if x is not None:
       x = self.embedding(x)  # [output_seq_len, batch_size, d_model]

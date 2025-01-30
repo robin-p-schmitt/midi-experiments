@@ -1,9 +1,11 @@
 import copy
+import torch
 from torch.nn import MSELoss, BCEWithLogitsLoss, CrossEntropyLoss
 
 from data_utils import NUM_NOTES, FRAMES_PER_BAR, NUM_BARS
 from models.transformer import TransformerDecoderModel, train as train_transformer
 from models.transformer_vae import VAEModel, train as train_vae_transformer
+from utils.dict_update import dict_update_deep
 
 
 transformer_v1_config = dict(
@@ -51,4 +53,14 @@ transformer_vae_v1_config = dict(
       weight_decay=0.0,
     )
   )
+)
+
+transformer_vae_v2_config = dict_update_deep(
+  transformer_vae_v1_config,
+  {
+    "model_opts.decoder_opts": dict(
+      conductor_in_act=torch.tanh,
+      transform_conductor_out=True,
+    )
+  }
 )
