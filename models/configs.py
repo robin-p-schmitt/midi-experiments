@@ -31,10 +31,18 @@ transformer_vae_v1_config = dict(
     cls=VAEModel,
     input_dim=NUM_NOTES + 2,  # add 2 for the silent idx and the special hidden representation index
     output_dim=NUM_NOTES + 1,  # add 1 for the silent idx
-    d_model=256,
-    num_heads=8,
-    num_layers=4,
     max_time_steps=NUM_BARS * FRAMES_PER_BAR + 1,  # add 1 for the special hidden representation index
+    encoder_opts=dict(
+      num_layers=4,
+      d_model=256,
+      num_heads=8,
+    ),
+    decoder_opts=dict(
+      conductor_num_layers=4,
+      decoder_num_layers=4,
+      d_model=256,
+      num_heads=8,
+    ),
   ),
   train_opts=dict(
     train_func=train_vae_transformer,
@@ -59,10 +67,8 @@ transformer_vae_v1_config = dict(
 transformer_vae_v2_config = dict_update_deep(
   transformer_vae_v1_config,
   {
-    "model_opts.decoder_opts": dict(
-      conductor_in_act=torch.tanh,
-      transform_conductor_out=True,
-    )
+    "model_opts.decoder_opts.conductor_in_act": torch.tanh,
+    "model_opts.decoder_opts.transform_conductor_out": True,
   }
 )
 

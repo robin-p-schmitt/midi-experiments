@@ -52,30 +52,20 @@ class VAEModel(nn.Module):
           self,
           input_dim,
           output_dim,
-          d_model,
-          num_heads,
-          num_layers,
           max_time_steps,
-          decoder_opts: Optional[Dict] = None,
+          encoder_opts: Dict,
+          decoder_opts: Dict,
   ):
     super(VAEModel, self).__init__()
 
     self.encoder = VAETransformerEncoder(
       input_dim=input_dim,
-      model_dim=d_model,
-      num_heads=num_heads,
-      num_layers=num_layers,
       max_time_steps=max_time_steps,
+      **encoder_opts,
     )
 
-    if decoder_opts is None:
-      decoder_opts = {}
     self.decoder = VAEHierarchicalTransformerDecoder(
       output_dim=output_dim,
-      d_model=d_model,
-      num_heads=num_heads,
-      conductor_num_layers=num_layers,
-      decoder_num_layers=num_layers,
       max_time_steps=max_time_steps,
       **decoder_opts,
     )
@@ -88,18 +78,18 @@ class VAEModel(nn.Module):
 
 
 class VAETransformerEncoder(nn.Module):
-  def __init__(self, input_dim, model_dim, num_heads, num_layers, max_time_steps):
+  def __init__(self, input_dim, d_model, num_heads, num_layers, max_time_steps):
     super(VAETransformerEncoder, self).__init__()
-    self.embedding = nn.Embedding(input_dim, model_dim)
+    self.embedding = nn.Embedding(input_dim, d_model)
     self.positional_encoding = PositionalEncoding(
-      d_model=model_dim,
+      d_model=d_model,
       max_len=max_time_steps,
     )
 
-    encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=num_heads)
+    encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=num_heads)
     self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-    self.encoder_out = nn.Linear(model_dim, 2 * model_dim)
+    self.encoder_out = nn.Linear(d_model, 2 * d_model)
 
   def forward(self, x):
     """
