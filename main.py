@@ -77,6 +77,11 @@ configs.append(dict(
   )
 ))
 
+# "dev": {
+#   "total": 3.471133567392826,
+#   "recon": 3.4651708602905273,
+#   "kl": 0.005962707102298737
+# },
 configs.append(dict(
   alias="maestro_transformer_vae_v2_50-epochs_0.1-data-fraction",
   model_opts=transformer_vae_v2_config['model_opts'],
@@ -88,6 +93,70 @@ configs.append(dict(
       "dataset_name": "maestro",
       "dataset_fraction": 0.1,
       "kl_loss_scale": 1.0,
+    },
+  )
+))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v2_50-epochs_0.1-data-fraction_wd-1e-4",
+  model_opts=transformer_vae_v2_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v2_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "batch_size": 256,
+      "dataset_name": "maestro",
+      "dataset_fraction": 0.1,
+      "kl_loss_scale": 1.0,
+      "optimizer_opts.weight_decay": 1e-4,
+    },
+  )
+))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v2_50-epochs_0.1-data-fraction_wd-1e-3",
+  model_opts=transformer_vae_v2_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v2_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "batch_size": 256,
+      "dataset_name": "maestro",
+      "dataset_fraction": 0.1,
+      "kl_loss_scale": 1.0,
+      "optimizer_opts.weight_decay": 1e-3,
+    },
+  )
+))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-1e-3",
+  model_opts=transformer_vae_v2_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v2_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "batch_size": 256,
+      "dataset_name": "maestro",
+      "dataset_fraction": 0.2,
+      "kl_loss_scale": 1.0,
+      "optimizer_opts.weight_decay": 1e-3,
+    },
+  )
+))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-5e-4",
+  model_opts=transformer_vae_v2_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v2_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "batch_size": 256,
+      "dataset_name": "maestro",
+      "dataset_fraction": 0.2,
+      "kl_loss_scale": 1.0,
+      "optimizer_opts.weight_decay": 5e-4,
     },
   )
 ))
