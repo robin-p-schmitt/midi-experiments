@@ -213,33 +213,46 @@ configs = []
 #   )
 # ))
 
-configs.append(dict(
-  alias="maestro_transformer_vae_v3_50-epochs_0.4-data-fraction_wd-2e-4_bs-512",
-  model_opts=transformer_vae_v3_config['model_opts'],
-  train_opts=dict_update_deep(
-    transformer_vae_v3_config['train_opts'],
-    {
-      "n_epochs": 50,
-      "dataset_fraction": 0.4,
-      "optimizer_opts.weight_decay": 2e-4,
-      "batch_size": 512,
-    },
-  )
-))
+# configs.append(dict(
+#   alias="maestro_transformer_vae_v3_50-epochs_0.4-data-fraction_wd-2e-4_bs-512",
+#   model_opts=transformer_vae_v3_config['model_opts'],
+#   train_opts=dict_update_deep(
+#     transformer_vae_v3_config['train_opts'],
+#     {
+#       "n_epochs": 50,
+#       "dataset_fraction": 0.4,
+#       "optimizer_opts.weight_decay": 2e-4,
+#       "batch_size": 512,
+#     },
+#   )
+# ))
+#
+# configs.append(dict(
+#   alias="maestro_transformer_vae_v3_50-epochs_0.4-data-fraction_wd-2e-4_bs-512_12-enc-layers_6-dec-layers",
+#   **dict_update_deep(
+#     transformer_vae_v3_config,
+#     {
+#       # model opts
+#       "model_opts.encoder_opts.num_layers": 12,
+#       "model_opts.decoder_opts.decoder_num_layers": 6,
+#       # train opts
+#       "train_opts.n_epochs": 50,
+#       "train_opts.dataset_fraction": 0.4,
+#       "train_opts.optimizer_opts.weight_decay": 2e-4,
+#       "train_opts.batch_size": 512,
+#     }
+#   ),
+# ))
 
 configs.append(dict(
-  alias="maestro_transformer_vae_v3_50-epochs_0.4-data-fraction_wd-2e-4_bs-512_12-enc-layers_6-dec-layers",
+  alias="maestro_transformer_vae_v3_50-epochs_0.2-data-fraction_wd-5e-4",
   **dict_update_deep(
     transformer_vae_v3_config,
     {
-      # model opts
-      "model_opts.encoder_opts.num_layers": 12,
-      "model_opts.decoder_opts.decoder_num_layers": 6,
       # train opts
-      "train_opts.n_epochs": 50,
-      "train_opts.dataset_fraction": 0.4,
-      "train_opts.optimizer_opts.weight_decay": 2e-4,
-      "train_opts.batch_size": 512,
+      "train_opts.n_epochs": 200,
+      "train_opts.dataset_fraction": 0.2,
+      "train_opts.optimizer_opts.weight_decay": 5e-4,
     }
   ),
 ))
