@@ -234,6 +234,49 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
     return self.output_layer(outputs)
 
 
+class CyclicAnnealingScheduler:
+  def __init__(
+          self,
+          M: int = 4,
+          R: float = 0.5,
+          f: Callable = lambda x: 2 * x,
+  ):
+    self.num_steps_ = None
+    self.ratio = None
+    self.ratio_ceil = None
+
+    self.M = M
+    self.R = R
+    self.f = f
+
+  @property
+  def num_steps(self):
+    assert self.num_steps_ is not None, "num_steps not set"
+    return self.num_steps_
+
+  @num_steps.setter
+  def num_steps(self, num_steps: int):
+    self.num_steps_ = num_steps
+    self._set_ratios()
+
+  def _set_ratios(self):
+    self.ratio = self.num_steps / self.M
+    self.ratio_ceil = math.ceil(self.ratio)
+
+  def __call__(self, n: int):
+    """
+
+    :param n: integer in range(1, self.num_steps + 1)
+    :return:
+    """
+
+    tau = (n - 1) % self.ratio_ceil
+    tau /= self.ratio
+    beta = self.f(tau) if tau <= self.R else 1
+
+    return beta
+
+
 def calc_model_output_and_loss(
         played_notes: torch.Tensor,
         seq_lens: torch.Tensor,
@@ -242,8 +285,9 @@ def calc_model_output_and_loss(
         optimizer: torch.optim.Optimizer,
         train_mode: bool,
         scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
-        kl_loss_scale: float = 0.01,
+        kl_loss_scale: Optional[float] = 0.01,
         min_lr: Optional[float] = None,
+        beta_scheduler: Optional[CyclicAnnealingScheduler] = None,
 ):
   """
 
@@ -256,6 +300,7 @@ def calc_model_output_and_loss(
   :param scheduler:
   :param kl_loss_scale:
   :param min_lr:
+  :param beta_scheduler:
   :return:
   """
   if train_mode:
@@ -307,6 +352,7 @@ def train(
         dataset_fraction: float = 1.0,
         load_checkpoint: Optional[str] = None,
         kl_loss_scale: float = 0.01,
+        beta_scheduler_opts: Optional[Dict] = None,
 ):
   checkpoint_path = f"{MODEL_CHECKPOINTS_PATH}/{alias}"
   if os.path.exists(checkpoint_path):
@@ -353,6 +399,14 @@ def train(
     scheduler = None
     min_lr = None
 
+  if beta_scheduler_opts:
+    beta_scheduler_opts = copy.deepcopy(beta_scheduler_opts)
+    beta_scheduler_cls = eval(beta_scheduler_opts.pop("cls"))
+    assert beta_scheduler_cls == CyclicAnnealingScheduler, "Only CyclicAnnealingScheduler is supported"
+    beta_scheduler = beta_scheduler_cls(**beta_scheduler_opts)
+  else:
+    beta_scheduler = None
+
   # Initialize TensorBoard writer
   writer = SummaryWriter(log_dir=f"./runs/{alias}")
 
@@ -376,7 +430,14 @@ def train(
 
       running_rec_loss = 0.0
       running_kl_loss = 0.0
-      for batch_idx, (played_notes, seq_lens, _) in enumerate(data_loader):
+      num_batches = len(data_loader)
+      beta_scheduler.num_steps = num_batches
+      for batch_idx, (played_notes, seq_lens, _) in enumerate(data_loader, start=1):
+        if beta_scheduler:
+          if train_mode:
+            kl_loss_scale = beta_scheduler(batch_idx)
+          else:
+            kl_loss_scale = 1.0
 
         played_notes = played_notes.to(device).transpose(0, 1)  # [seq_len, batch_size]
         with torch.set_grad_enabled(train_mode):
@@ -390,6 +451,7 @@ def train(
             seq_lens=seq_lens,
             kl_loss_scale=kl_loss_scale,
             min_lr=min_lr,
+            beta_scheduler=beta_scheduler,
           )
           running_kl_loss += kl_loss.item()
           running_rec_loss += recon_loss.item()
@@ -405,12 +467,12 @@ def train(
 
         # mem_info = torch.cuda.mem_get_info(device)
         print(
-          f"Epoch {epoch}/{n_epochs}, Batch {batch_idx + 1} - "
+          f"Epoch {epoch}/{n_epochs}, Batch {batch_idx} - "
           f"{data_alias} Total loss: {loss.item():.4f}, "
-          f"Recon loss: {recon_loss.item():.4f}, KL loss: {kl_loss.item():.4f}"
+          f"Recon loss: {recon_loss.item():.4f}, "
+          f"KL loss: {kl_loss.item():.4f} - KL weight: {kl_loss_scale:.4f}"
         )
 
-      num_batches = len(data_loader)
       avg_kl_loss = running_kl_loss / num_batches
       avg_rec_loss = running_rec_loss / num_batches
       avg_total_loss = avg_rec_loss + avg_kl_loss
