@@ -1,3 +1,5 @@
+import copy
+
 from torch.nn import BCEWithLogitsLoss
 
 from data_utils import (
@@ -13,54 +15,65 @@ prepare_data(dataset_name="maestro", num_workers=6)
 
 configs = []
 
-# configs.append(dict(
-#   alias="lakh_transformer_v1_lr-1e-3_bce_5-epochs_batch-size-256",
-#   model_opts=transformer_v1_config['model_opts'],
-#   train_opts=dict_update_deep(
-#     transformer_v1_config['train_opts'],
-#     {
-#       "lr": 1e-3,
-#       "criterion": BCEWithLogitsLoss(),
-#       "n_epochs": 10,
-#       "batch_size": 512,
-#       "dataset_name": "lakh",
-#       "dataset_fraction": 1.0,
-#     },
-#   )
-# ))
 
-# configs.append(dict(
-#   alias="maestro_transformer_vae_v1_lr-1e-3_20-epochs_batch-size-128",
-#   model_opts=transformer_vae_v1_config['model_opts'],
-#   train_opts=dict_update_deep(
-#     transformer_vae_v1_config['train_opts'],
-#     {
-#       "lr": 1e-3,
-#       "n_epochs": 20,
-#       "batch_size": 128,
-#       "dataset_name": "maestro",
-#       "dataset_fraction": 1.0,
-#       "kl_loss_scale": 0.005,
-#     },
-#   )
-# ))
-
-# for single training sample: train Total loss: 0.0925, Recon loss: 0.0059, KL loss: 0.0866
+# "dev": {
+#   "total": 3.5579125839285553,
+#   "recon": 3.5474765300750732,
+#   "kl": 0.010436053853482008
+# },
 configs.append(dict(
-  alias="maestro_transformer_vae_v1_20-epochs",
+  alias="maestro_transformer_vae_v1_20-epochs_0.1-data-fraction",
   model_opts=transformer_vae_v1_config['model_opts'],
   train_opts=dict_update_deep(
     transformer_vae_v1_config['train_opts'],
     {
-      "n_epochs": 2,
-      "batch_size": 32,
+      "n_epochs": 50,
+      "batch_size": 256,
       "dataset_name": "maestro",
-      "dataset_fraction": 0.05,
+      "dataset_fraction": 0.1,
+      "kl_loss_scale": 1.0,
+    },
+  )
+))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v1_20-epochs_0.1-data-fraction_wd-1e-6",
+  model_opts=transformer_vae_v1_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v1_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "batch_size": 256,
+      "dataset_name": "maestro",
+      "dataset_fraction": 0.1,
+      "kl_loss_scale": 1.0,
+      "optimizer_opts.weight_decay": 1e-6,
+    },
+  )
+))
+
+# "dev": {
+#   "total": 3.072379293269478,
+#   "recon": 3.0698957443237305,
+#   "kl": 0.002483548945747316
+# },
+configs.append(dict(
+  alias="maestro_transformer_vae_v1_20-epochs_0.2-data-fraction",
+  model_opts=transformer_vae_v1_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v1_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "batch_size": 256,
+      "dataset_name": "maestro",
+      "dataset_fraction": 0.2,
+      "kl_loss_scale": 1.0,
     },
   )
 ))
 
 for config in configs:
+  config = copy.deepcopy(config)
   model_cls = config["model_opts"].pop("cls")
   model = model_cls(**config["model_opts"])
 

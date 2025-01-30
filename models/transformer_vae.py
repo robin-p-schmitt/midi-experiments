@@ -10,6 +10,7 @@ import os
 import math
 from torch.nn.utils.rnn import pack_padded_sequence
 from torch.optim.lr_scheduler import OneCycleLR, ExponentialLR
+from torch.optim import Adam
 
 from dataset import get_data_loaders_for_training, PianoRollDataset, PlayedNotesDataset
 from data_utils import (
@@ -252,7 +253,7 @@ def calc_model_output_and_loss(
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
-    if scheduler and scheduler.get_last_lr()[0] > min_lr:
+    if scheduler and (not min_lr or scheduler.get_last_lr()[0] > min_lr):
       scheduler.step()
 
   return outputs, loss, recon_loss, kl_loss
@@ -261,12 +262,11 @@ def calc_model_output_and_loss(
 def train(
         model: VAEModel,
         n_epochs: int,
-        lr: float,
         batch_size: int,
         alias: str,
         criterion: Callable,
+        optimizer_opts: Dict,
         lr_scheduling_opts: Optional[Dict] = None,
-        max_lr: float = 0.01,
         dataset_name: str = "maestro",
         dataset_fraction: float = 1.0,
         load_checkpoint: Optional[str] = None,
@@ -282,9 +282,10 @@ def train(
 
   os.makedirs(checkpoint_path, exist_ok=True)
   print(f"Training {alias}...")
-  print(f"LR: {lr}")
-  print(f"LR scheduling: ", lr_scheduling_opts)
+  print(f"Optimizer: {optimizer_opts}")
+  print(f"LR scheduling: {lr_scheduling_opts}")
   print(f"Criterion: {criterion}")
+  print(f"KL loss scale: {kl_loss_scale}")
 
   device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
   print(f"Using device: {device}")
@@ -292,7 +293,9 @@ def train(
   if load_checkpoint:
     model.load_state_dict(torch.load(load_checkpoint), strict=False)
   model.to(device)
-  optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+  optimizer_cls = eval(optimizer_opts.pop("cls"))
+  optimizer = optimizer_cls(model.parameters(), **optimizer_opts)
 
   dataset_name = dataset_name.upper()
   assert dataset_name in VALID_DATASET_NAMES, f"Invalid dataset name: {dataset_name}"
@@ -312,13 +315,14 @@ def train(
     scheduler = scheduler_cls(optimizer, **lr_scheduling_opts)
   else:
     scheduler = None
+    min_lr = None
 
   # Initialize TensorBoard writer
   writer = SummaryWriter(log_dir=f"./runs/{alias}")
 
   best_dev_epoch = 1
 
-  for epoch in range(n_epochs):
+  for epoch in range(1, n_epochs + 1):
     training_stats[epoch] = {"losses": {}}
 
     if scheduler:
@@ -334,7 +338,8 @@ def train(
       else:
         model.eval()
 
-      running_loss = 0.0
+      running_rec_loss = 0.0
+      running_kl_loss = 0.0
       for batch_idx, (played_notes, seq_lens, _) in enumerate(data_loader):
 
         played_notes = played_notes.to(device).transpose(0, 1)  # [seq_len, batch_size]
@@ -350,7 +355,8 @@ def train(
             kl_loss_scale=kl_loss_scale,
             min_lr=min_lr,
           )
-          running_loss += loss.item()
+          running_kl_loss += kl_loss.item()
+          running_rec_loss += recon_loss.item()
 
           # if train_mode:
           #   from data_utils import visualize_piano_roll
@@ -363,28 +369,37 @@ def train(
 
         # mem_info = torch.cuda.mem_get_info(device)
         print(
-          f"Epoch {epoch + 1}/{n_epochs}, Batch {batch_idx + 1} - "
+          f"Epoch {epoch}/{n_epochs}, Batch {batch_idx + 1} - "
           f"{data_alias} Total loss: {loss.item():.4f}, "
           f"Recon loss: {recon_loss.item():.4f}, KL loss: {kl_loss.item():.4f}"
         )
 
-      avg_loss = running_loss / len(data_loader)
-      writer.add_scalar(f"{data_alias}_loss/epoch", avg_loss, epoch)
-      training_stats[epoch]["losses"][data_alias] = avg_loss
+      num_batches = len(data_loader)
+      avg_kl_loss = running_kl_loss / num_batches
+      avg_rec_loss = running_rec_loss / num_batches
+      avg_total_loss = avg_rec_loss + avg_kl_loss
+      writer.add_scalar(f"{data_alias}_kl-loss/epoch", avg_kl_loss, epoch)
+      writer.add_scalar(f"{data_alias}_recon-loss/epoch", avg_rec_loss, epoch)
+      writer.add_scalar(f"{data_alias}_total-loss/epoch", avg_total_loss, epoch)
+      training_stats[epoch]["losses"][data_alias] = {
+        "total": avg_total_loss,
+        "recon": avg_rec_loss,
+        "kl": avg_kl_loss,
+      }
 
       if scheduler and data_alias == "train":
         writer.add_scalar("lr", scheduler.get_last_lr()[0], epoch)
 
     # Save model checkpoint
-    torch.save(model.state_dict(), f"{checkpoint_path}/model_epoch_{epoch + 1}.pt")
+    torch.save(model.state_dict(), f"{checkpoint_path}/model_epoch_{epoch}.pt")
 
     # remove all checkpoints except for the best and last one
-    dev_losses = map(lambda x: x["losses"]["dev"], training_stats.values())
-    best_dev_epoch = np.argmin(dev_losses)
+    dev_losses = list(map(lambda x: x["losses"]["dev"]["total"], training_stats.values()))
+    best_dev_epoch = np.argmin(dev_losses) + 1
     for epoch_file in os.listdir(checkpoint_path):
       assert epoch_file.startswith("model_epoch_")
       model_epoch = int(epoch_file.split("_")[-1].split(".")[0])
-      if model_epoch not in [best_dev_epoch + 1, epoch + 1]:
+      if model_epoch not in [best_dev_epoch, epoch]:
         os.remove(f"{checkpoint_path}/{epoch_file}")
 
     training_stats[epoch]["last_lr"] = scheduler.get_last_lr()[0] if scheduler else lr
@@ -395,7 +410,7 @@ def train(
   with open(training_stats_file_path, "w") as f:
     json.dump(training_stats, f, indent=2)
 
-  best_dev_checkpoint_path = f"{checkpoint_path}/model_epoch_{best_dev_epoch + 1}.pt"
+  best_dev_checkpoint_path = f"{checkpoint_path}/model_epoch_{best_dev_epoch}.pt"
   # test(
   #   model=model,
   #   checkpoint_path=best_dev_checkpoint_path,

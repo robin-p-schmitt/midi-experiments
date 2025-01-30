@@ -39,12 +39,16 @@ transformer_vae_v1_config = dict(
     batch_size=256,
     n_epochs=10,
     kl_loss_scale=1.0,
-    lr=1e-3,
     criterion=CrossEntropyLoss(),
     lr_scheduling_opts=dict(
       cls="ExponentialLR",
       gamma=0.999,
       min_lr=1e-5,
+    ),
+    optimizer_opts=dict(
+      cls="Adam",
+      lr=1e-3,
+      weight_decay=0.0,
     )
   )
 )
