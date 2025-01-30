@@ -138,7 +138,57 @@ configs.append(dict(
 ))
 
 configs.append(dict(
-  alias="maestro_transformer_vae_v3_50-epochs_0.2-data-fraction_wd-5e-4_load-after-50",
+  alias="maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-5e-4_bs-128",
+  model_opts=transformer_vae_v2_config['model_opts'],
+  train_opts=dict_update_deep(
+    transformer_vae_v2_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "dataset_fraction": 0.2,
+      "optimizer_opts.weight_decay": 5e-4,
+      "batch_size": 128,
+    },
+  )
+))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-5e-4_512-dims",
+  model_opts=dict_update_deep(
+    transformer_vae_v2_config['model_opts'],
+    {
+      "d_model": 512
+    }
+  ),
+  train_opts=dict_update_deep(
+    transformer_vae_v2_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "dataset_fraction": 0.2,
+      "optimizer_opts.weight_decay": 5e-4,
+    },
+  )
+))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-5e-4_6-layers",
+  model_opts=dict_update_deep(
+    transformer_vae_v2_config['model_opts'],
+    {
+      "num_layers": 6
+    }
+  ),
+  train_opts=dict_update_deep(
+    transformer_vae_v2_config['train_opts'],
+    {
+      "n_epochs": 50,
+      "dataset_fraction": 0.2,
+      "optimizer_opts.weight_decay": 5e-4,
+    },
+  )
+))
+
+configs.append(dict(
+  alias="maestro_transformer_vae_v3_50-epochs_0.2-data-fraction_wd-5e-4",
   model_opts=transformer_vae_v3_config['model_opts'],
   train_opts=dict_update_deep(
     transformer_vae_v3_config['train_opts'],
@@ -146,10 +196,23 @@ configs.append(dict(
       "n_epochs": 50,
       "dataset_fraction": 0.2,
       "optimizer_opts.weight_decay": 5e-4,
-      "load_checkpoint": "/content/model_checkpoints/maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-5e-4/model_epoch_50.pt",
     },
   )
 ))
+
+# configs.append(dict(
+#   alias="maestro_transformer_vae_v3_50-epochs_0.2-data-fraction_wd-5e-4_load-after-50",
+#   model_opts=transformer_vae_v3_config['model_opts'],
+#   train_opts=dict_update_deep(
+#     transformer_vae_v3_config['train_opts'],
+#     {
+#       "n_epochs": 50,
+#       "dataset_fraction": 0.2,
+#       "optimizer_opts.weight_decay": 5e-4,
+#       "load_checkpoint": "/content/model_checkpoints/maestro_transformer_vae_v2_50-epochs_0.2-data-fraction_wd-5e-4/model_epoch_50.pt",
+#     },
+#   )
+# ))
 
 # configs.append(dict(
 #   alias="maestro_transformer_vae_v2_10-epochs_0.2-data-fraction_wd-5e-4_load-after-50",

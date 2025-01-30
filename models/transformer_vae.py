@@ -241,6 +241,7 @@ class CyclicAnnealingScheduler:
           M: int = 4,
           R: float = 0.5,
           f: Callable = lambda x: 2 * x,
+          max_value: float = 1.0,
   ):
     self.num_steps_ = None
     self.ratio = None
@@ -249,6 +250,7 @@ class CyclicAnnealingScheduler:
     self.M = M
     self.R = R
     self.f = f
+    self.max_value = max_value
 
   @property
   def num_steps(self):
@@ -274,6 +276,7 @@ class CyclicAnnealingScheduler:
     tau = (n - 1) % self.ratio_ceil
     tau /= self.ratio
     beta = self.f(tau) if tau <= self.R else 1
+    beta *= self.max_value
 
     return beta
 

@@ -71,7 +71,8 @@ transformer_vae_v3_config = dict_update_deep(
   {
     "train_opts.beta_scheduler_opts": dict(
       cls="CyclicAnnealingScheduler",
-      M=2,
+      M=1,
+      max_value=0.2,
     )
   }
 )
