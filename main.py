@@ -233,7 +233,9 @@ configs.append(dict(
     transformer_vae_v3_config,
     {
       # model opts
-      "model_opts.num_layers": 6,
+      "model_opts.encoder_opts.num_layers": 6,
+      "model_opts.decoder_opts.conductor_num_layers": 6,
+      "model_opts.decoder_opts.decoder_num_layers": 6,
       # train opts
       "train_opts.n_epochs": 50,
       "train_opts.dataset_fraction": 0.4,
