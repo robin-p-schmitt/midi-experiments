@@ -52,9 +52,10 @@ configs.append(dict(
   train_opts=dict_update_deep(
     transformer_vae_v1_config['train_opts'],
     {
-      "n_epochs": 20,
+      "n_epochs": 2,
+      "batch_size": 32,
       "dataset_name": "maestro",
-      "dataset_fraction": 1.0,
+      "dataset_fraction": 0.05,
     },
   )
 ))

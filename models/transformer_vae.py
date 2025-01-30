@@ -1,5 +1,5 @@
 import copy
-
+import json
 import torch
 from torch import nn
 import torch.nn.functional as F  # noqa
@@ -204,18 +204,21 @@ def calc_model_output_and_loss(
         criterion: Callable,
         optimizer: torch.optim.Optimizer,
         train_mode: bool,
-        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
         kl_loss_scale: float = 0.01,
+        min_lr: Optional[float] = None,
 ):
   """
 
-  :param played_notes: input of shape [seq_len, batch_size]
+  :param played_notes:
   :param seq_lens:
   :param model:
   :param criterion:
   :param optimizer:
   :param train_mode:
   :param scheduler:
+  :param kl_loss_scale:
+  :param min_lr:
   :return:
   """
   if train_mode:
@@ -249,7 +252,7 @@ def calc_model_output_and_loss(
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
-    if scheduler:
+    if scheduler and scheduler.get_last_lr()[0] > min_lr:
       scheduler.step()
 
   return outputs, loss, recon_loss, kl_loss
@@ -273,6 +276,9 @@ def train(
   if os.path.exists(checkpoint_path):
     print(f"Checkpoint found at {checkpoint_path}. Skipping training of {alias}.")
     return
+
+  training_stats_file_path = f"{checkpoint_path}/training_stats.txt"
+  training_stats = {}
 
   os.makedirs(checkpoint_path, exist_ok=True)
   print(f"Training {alias}...")
@@ -302,6 +308,7 @@ def train(
   if lr_scheduling_opts:
     lr_scheduling_opts = copy.deepcopy(lr_scheduling_opts)
     scheduler_cls = eval(lr_scheduling_opts.pop("cls"))
+    min_lr = lr_scheduling_opts.pop("min_lr", None)
     scheduler = scheduler_cls(optimizer, **lr_scheduling_opts)
   else:
     scheduler = None
@@ -309,10 +316,11 @@ def train(
   # Initialize TensorBoard writer
   writer = SummaryWriter(log_dir=f"./runs/{alias}")
 
-  avg_losses_per_epoch = {"train": [], "dev": [], "devtrain": []}
   best_dev_epoch = 1
 
   for epoch in range(n_epochs):
+    training_stats[epoch] = {"losses": {}}
+
     if scheduler:
       print(f"Starting epoch {epoch} with LR {scheduler.get_lr()}")
     for data_alias, data_loader in [
@@ -340,6 +348,7 @@ def train(
             train_mode=train_mode,
             seq_lens=seq_lens,
             kl_loss_scale=kl_loss_scale,
+            min_lr=min_lr,
           )
           running_loss += loss.item()
 
@@ -360,8 +369,8 @@ def train(
         )
 
       avg_loss = running_loss / len(data_loader)
-      avg_losses_per_epoch[data_alias].append(avg_loss)
-      writer.add_scalar(f"{data_alias}_loss/batch", avg_loss, epoch)
+      writer.add_scalar(f"{data_alias}_loss/epoch", avg_loss, epoch)
+      training_stats[epoch]["losses"][data_alias] = avg_loss
 
       if scheduler and data_alias == "train":
         writer.add_scalar("lr", scheduler.get_last_lr()[0], epoch)
@@ -370,15 +379,21 @@ def train(
     torch.save(model.state_dict(), f"{checkpoint_path}/model_epoch_{epoch + 1}.pt")
 
     # remove all checkpoints except for the best and last one
-    best_dev_epoch = np.argmin(avg_losses_per_epoch["dev"])
+    dev_losses = map(lambda x: x["losses"]["dev"], training_stats.values())
+    best_dev_epoch = np.argmin(dev_losses)
     for epoch_file in os.listdir(checkpoint_path):
       assert epoch_file.startswith("model_epoch_")
       model_epoch = int(epoch_file.split("_")[-1].split(".")[0])
       if model_epoch not in [best_dev_epoch + 1, epoch + 1]:
         os.remove(f"{checkpoint_path}/{epoch_file}")
 
+    training_stats[epoch]["last_lr"] = scheduler.get_last_lr()[0] if scheduler else lr
+
   print(f"Models saved to {checkpoint_path}")
   writer.close()
+
+  with open(training_stats_file_path, "w") as f:
+    json.dump(training_stats, f, indent=2)
 
   best_dev_checkpoint_path = f"{checkpoint_path}/model_epoch_{best_dev_epoch + 1}.pt"
   # test(

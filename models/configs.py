@@ -44,6 +44,7 @@ transformer_vae_v1_config = dict(
     lr_scheduling_opts=dict(
       cls="ExponentialLR",
       gamma=0.999,
+      min_lr=1e-5,
     )
   )
 )
