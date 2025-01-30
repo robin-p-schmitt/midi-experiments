@@ -202,6 +202,7 @@ def calc_model_output_and_loss(
         optimizer: torch.optim.Optimizer,
         train_mode: bool,
         scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        kl_loss_scale: float = 0.01,
 ):
   """
 
@@ -237,7 +238,7 @@ def calc_model_output_and_loss(
   recon_loss = criterion(output_packed.data, played_notes_packed.data)
   kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
   kl_loss = torch.mean(kl_loss)
-  kl_loss *= 0.005
+  kl_loss *= kl_loss_scale  # kl weight
 
   loss = recon_loss + kl_loss
 
@@ -263,6 +264,7 @@ def train(
         dataset_name: str = "maestro",
         dataset_fraction: float = 1.0,
         load_checkpoint: Optional[str] = None,
+        kl_loss_scale: float = 0.01,
 ):
   checkpoint_path = f"{MODEL_CHECKPOINTS_PATH}/{alias}"
   # if os.path.exists(checkpoint_path):
@@ -340,6 +342,7 @@ def train(
             scheduler=scheduler,
             train_mode=train_mode,
             seq_lens=seq_lens,
+            kl_loss_scale=kl_loss_scale,
           )
           running_loss += loss.item()
 
@@ -381,13 +384,13 @@ def train(
   writer.close()
 
   best_dev_checkpoint_path = f"{checkpoint_path}/model_epoch_{best_dev_epoch + 1}.pt"
-  test(
-    model=model,
-    checkpoint_path=best_dev_checkpoint_path,
-    alias=alias,
-    criterion=criterion,
-    dataset_name=dataset_name,
-  )
+  # test(
+  #   model=model,
+  #   checkpoint_path=best_dev_checkpoint_path,
+  #   alias=alias,
+  #   criterion=criterion,
+  #   dataset_name=dataset_name,
+  # )
 
 
 def test(
