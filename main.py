@@ -228,13 +228,12 @@ configs.append(dict(
 ))
 
 configs.append(dict(
-  alias="maestro_transformer_vae_v3_50-epochs_0.4-data-fraction_wd-2e-4_bs-512_6-layers",
+  alias="maestro_transformer_vae_v3_50-epochs_0.4-data-fraction_wd-2e-4_bs-512_12-enc-layers_6-dec-layers",
   **dict_update_deep(
     transformer_vae_v3_config,
     {
       # model opts
-      "model_opts.encoder_opts.num_layers": 6,
-      "model_opts.decoder_opts.conductor_num_layers": 6,
+      "model_opts.encoder_opts.num_layers": 12,
       "model_opts.decoder_opts.decoder_num_layers": 6,
       # train opts
       "train_opts.n_epochs": 50,
