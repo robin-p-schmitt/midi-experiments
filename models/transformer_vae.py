@@ -1,12 +1,15 @@
+import copy
+
 import torch
 from torch import nn
 import torch.nn.functional as F  # noqa
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict
 import os
 import math
 from torch.nn.utils.rnn import pack_padded_sequence
+from torch.optim.lr_scheduler import OneCycleLR, ExponentialLR
 
 from dataset import get_data_loaders_for_training, PianoRollDataset, PlayedNotesDataset
 from data_utils import (
@@ -259,7 +262,7 @@ def train(
         batch_size: int,
         alias: str,
         criterion: Callable,
-        lr_scheduling: Optional[str] = None,
+        lr_scheduling_opts: Optional[Dict] = None,
         max_lr: float = 0.01,
         dataset_name: str = "maestro",
         dataset_fraction: float = 1.0,
@@ -267,14 +270,14 @@ def train(
         kl_loss_scale: float = 0.01,
 ):
   checkpoint_path = f"{MODEL_CHECKPOINTS_PATH}/{alias}"
-  # if os.path.exists(checkpoint_path):
-  #   print(f"Checkpoint found at {checkpoint_path}. Skipping training of {alias}.")
-  #   return
+  if os.path.exists(checkpoint_path):
+    print(f"Checkpoint found at {checkpoint_path}. Skipping training of {alias}.")
+    return
 
   os.makedirs(checkpoint_path, exist_ok=True)
   print(f"Training {alias}...")
   print(f"LR: {lr}")
-  print(f"LR scheduling: ", lr_scheduling)
+  print(f"LR scheduling: ", lr_scheduling_opts)
   print(f"Criterion: {criterion}")
 
   device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -296,16 +299,10 @@ def train(
     dataset_cls=PlayedNotesDataset,
   )
 
-  if lr_scheduling:
-    if lr_scheduling == "oclr":
-      scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=max_lr,
-        steps_per_epoch=len(train_loader),
-        epochs=n_epochs,
-      )
-    else:
-      raise NotImplementedError
+  if lr_scheduling_opts:
+    lr_scheduling_opts = copy.deepcopy(lr_scheduling_opts)
+    scheduler_cls = eval(lr_scheduling_opts.pop("cls"))
+    scheduler = scheduler_cls(optimizer, **lr_scheduling_opts)
   else:
     scheduler = None
 

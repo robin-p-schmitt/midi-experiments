@@ -36,9 +36,14 @@ transformer_vae_v1_config = dict(
   ),
   train_opts=dict(
     train_func=train_vae_transformer,
-    batch_size=32,
+    batch_size=256,
     n_epochs=10,
-    lr=0.001,
+    kl_loss_scale=1.0,
+    lr=1e-3,
     criterion=CrossEntropyLoss(),
+    lr_scheduling_opts=dict(
+      cls="ExponentialLR",
+      gamma=0.999,
+    )
   )
 )

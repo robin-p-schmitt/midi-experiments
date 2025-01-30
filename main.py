@@ -47,19 +47,14 @@ configs = []
 
 # for single training sample: train Total loss: 0.0925, Recon loss: 0.0059, KL loss: 0.0866
 configs.append(dict(
-  alias="maestro_transformer_vae_v1_lr-5e-4_oclr_max-lr-5e-3_20-epochs_batch-size-256_kl-scale-0.01",
+  alias="maestro_transformer_vae_v1_20-epochs",
   model_opts=transformer_vae_v1_config['model_opts'],
   train_opts=dict_update_deep(
     transformer_vae_v1_config['train_opts'],
     {
-      "lr": 1e-4,
-      "lr_scheduling": "oclr",
-      "max_lr": 5e-4,
-      "n_epochs": 200,
-      "batch_size": 256,
+      "n_epochs": 20,
       "dataset_name": "maestro",
       "dataset_fraction": 1.0,
-      "kl_loss_scale": 0.05,
     },
   )
 ))
