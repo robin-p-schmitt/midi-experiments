@@ -4,7 +4,7 @@ from torch.nn import MSELoss, BCEWithLogitsLoss, CrossEntropyLoss
 
 from data_utils import NUM_NOTES, FRAMES_PER_BAR, NUM_BARS
 from models.transformer import TransformerDecoderModel, train as train_transformer
-from models.transformer_vae import VAEModel, train as train_vae_transformer
+from models.transformer_vae import VAEModel, train as train_vae_transformer, VAETransformerDecoder
 from utils.dict_update import dict_update_deep
 
 
@@ -80,5 +80,12 @@ transformer_vae_v3_config = dict_update_deep(
       M=1,
       max_value=0.2,
     )
+  }
+)
+
+transformer_vae_v4_config = dict_update_deep(
+  transformer_vae_v3_config,
+  {
+    "model_opts.decoder_cls": VAETransformerDecoder,
   }
 )

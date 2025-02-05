@@ -47,36 +47,6 @@ class PositionalEncoding(nn.Module):
     return self.pe[:x.size(0)]
 
 
-class VAEModel(nn.Module):
-  def __init__(
-          self,
-          input_dim,
-          output_dim,
-          max_time_steps,
-          encoder_opts: Dict,
-          decoder_opts: Dict,
-  ):
-    super(VAEModel, self).__init__()
-
-    self.encoder = VAETransformerEncoder(
-      input_dim=input_dim,
-      max_time_steps=max_time_steps,
-      **encoder_opts,
-    )
-
-    self.decoder = VAEHierarchicalTransformerDecoder(
-      output_dim=output_dim,
-      max_time_steps=max_time_steps,
-      **decoder_opts,
-    )
-
-  def encode(self, x):
-    return self.encoder(x)
-
-  def decode(self, z, output_seq_len, num_sub_seqs, x=None):
-    return self.decoder(z, output_seq_len, num_sub_seqs, x)
-
-
 class VAETransformerEncoder(nn.Module):
   def __init__(self, input_dim, d_model, num_heads, num_layers, max_time_steps):
     super(VAETransformerEncoder, self).__init__()
@@ -160,7 +130,7 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
   def forward(self, z: torch.Tensor, output_seq_len: int, num_sub_seqs: int, x: Optional[torch.Tensor]):
     """
 
-    :param z: hidden representation shape [batch_size, input_dim]
+    :param z: hidden representation shape [batch_size, d_model]
     :param output_seq_len: number of frames of the output (= number of frames of the encoder input)
     :param num_sub_seqs: chunk the output into num_sub_seqs sub sequences
     :param x: optional input of shape [output_seq_len, batch_size, input_dim]
@@ -223,6 +193,87 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
       raise NotImplementedError
 
     return self.output_layer(outputs)
+
+
+class VAETransformerDecoder(nn.Module):
+  def __init__(
+          self,
+          d_model,
+          output_dim,
+          num_heads,
+          decoder_num_layers,
+          max_time_steps,
+  ):
+    super(VAETransformerDecoder, self).__init__()
+    self.positional_encoding = PositionalEncoding(
+      d_model=d_model,
+      max_len=max_time_steps,
+    )
+    self.embedding = nn.Embedding(output_dim, d_model)
+
+    decoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=num_heads)
+    self.decoder = nn.TransformerEncoder(decoder_layer, num_layers=decoder_num_layers)
+
+    self.output_layer = nn.Linear(d_model, output_dim)
+
+  def forward(self, z: torch.Tensor, x: Optional[torch.Tensor]):
+    """
+
+    :param z: hidden representation shape [batch_size, d_model]
+    :param x: optional input of shape [output_seq_len, batch_size, input_dim]
+    :return:
+    """
+
+    if x is not None:
+      x = self.embedding(x)  # [output_seq_len, batch_size, d_model]
+
+      # concatenate the conductor sequence with the input
+      x_ext = torch.cat((z.unsqueeze(0), x), dim=0)  # [1 + output_seq_len, batch_size, d_model]
+      # remove the last frame of the input (shift right)
+      x_ext = x_ext[:-1]  # [output_seq_len, batch_size, d_model]
+
+      x_ext += self.positional_encoding(x_ext)
+      causal_mask = nn.Transformer.generate_square_subsequent_mask(x_ext.size(0))
+      outputs = self.decoder(
+        x_ext,
+        mask=causal_mask,
+        is_causal=True,
+      )
+    else:
+      raise NotImplementedError
+
+    return self.output_layer(outputs)
+
+
+class VAEModel(nn.Module):
+  def __init__(
+          self,
+          input_dim,
+          output_dim,
+          max_time_steps,
+          encoder_opts: Dict,
+          decoder_opts: Dict,
+          decoder_cls=VAEHierarchicalTransformerDecoder,
+  ):
+    super(VAEModel, self).__init__()
+
+    self.encoder = VAETransformerEncoder(
+      input_dim=input_dim,
+      max_time_steps=max_time_steps,
+      **encoder_opts,
+    )
+
+    self.decoder = decoder_cls(
+      output_dim=output_dim,
+      max_time_steps=max_time_steps,
+      **decoder_opts,
+    )
+
+  def encode(self, x):
+    return self.encoder(x)
+
+  def decode(self, z, output_seq_len, num_sub_seqs, x=None):
+    return self.decoder(z, output_seq_len, num_sub_seqs, x)
 
 
 class CyclicAnnealingScheduler:

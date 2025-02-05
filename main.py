@@ -5,7 +5,13 @@ from torch.nn import BCEWithLogitsLoss
 from data_utils import (
   prepare_data
 )
-from models.configs import transformer_v1_config, transformer_vae_v1_config, transformer_vae_v2_config, transformer_vae_v3_config
+from models.configs import (
+  transformer_v1_config,
+  transformer_vae_v1_config,
+  transformer_vae_v2_config,
+  transformer_vae_v3_config,
+  transformer_vae_v4_config
+)
 from models.transformer import TransformerDecoderModel, train
 from models.transformer_vae import VAETransformerEncoder
 from utils.dict_update import dict_update_deep
@@ -245,12 +251,12 @@ configs = []
 # ))
 
 configs.append(dict(
-  alias="maestro_transformer_vae_v3_50-epochs_0.2-data-fraction_wd-5e-4",
+  alias="maestro_transformer_vae_v4_50-epochs_0.2-data-fraction_wd-5e-4",
   **dict_update_deep(
-    transformer_vae_v3_config,
+    transformer_vae_v4_config,
     {
       # train opts
-      "train_opts.n_epochs": 200,
+      "train_opts.n_epochs": 50,
       "train_opts.dataset_fraction": 0.2,
       "train_opts.optimizer_opts.weight_decay": 5e-4,
     }
