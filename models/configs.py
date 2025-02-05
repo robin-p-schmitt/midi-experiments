@@ -87,5 +87,10 @@ transformer_vae_v4_config = dict_update_deep(
   transformer_vae_v3_config,
   {
     "model_opts.decoder_cls": VAETransformerDecoder,
-  }
+  },
+  [
+    "model_opts.decoder_opts.conductor_num_layers",
+    "model_opts.decoder_opts.conductor_in_act",
+    "model_opts.decoder_opts.transform_conductor_out",
+  ]
 )

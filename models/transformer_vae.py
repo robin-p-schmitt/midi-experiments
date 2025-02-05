@@ -273,7 +273,10 @@ class VAEModel(nn.Module):
     return self.encoder(x)
 
   def decode(self, z, output_seq_len, num_sub_seqs, x=None):
-    return self.decoder(z, output_seq_len, num_sub_seqs, x)
+    if isinstance(self.decoder, VAEHierarchicalTransformerDecoder):
+      return self.decoder(z, output_seq_len, num_sub_seqs, x)
+    else:
+      return self.decoder(z, x)
 
 
 class CyclicAnnealingScheduler:
