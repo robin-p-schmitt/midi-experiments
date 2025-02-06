@@ -58,10 +58,17 @@ def unpack_dataset(data_gz_path: str):
 
 
 def filter_piano_roll(piano_roll: np.ndarray):
-  if np.all(np.sum(piano_roll, axis=0) > MAX_NUM_NOTES_PLAYED_AT_ONCE):
+  piano_roll_binarized = np.zeros_like(piano_roll)
+  piano_roll_binarized[piano_roll > 0] = 1
+
+  if np.all(np.sum(piano_roll_binarized, axis=0) > MAX_NUM_NOTES_PLAYED_AT_ONCE):
     # Skip piano rolls with more than MAX_NUM_NOTES_PLAYED_AT_ONCE notes played at once
     return True
 
+  return False
+
+
+def no_filter(piano_roll: np.ndarray):
   return False
 
 
@@ -89,7 +96,7 @@ def extract_piano_roll_from_instrument(
   # clip the time to the last non-zero column
   seq_len = int(np.nonzero(piano_roll)[1][-1]) + 1
   piano_roll = piano_roll[:, :seq_len]
-  piano_roll[piano_roll > 0] = 1  # binarize the piano roll
+  # piano_roll[piano_roll > 0] = 1  # binarize the piano roll
 
   if filter_func(piano_roll):
     # Skip piano rolls for which the filter function returns True
@@ -122,6 +129,21 @@ def compress_piano_roll(piano_roll: np.ndarray) -> np.ndarray:
   return played_notes
 
 
+def compress_piano_roll_v2(piano_roll: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+  """
+
+  :param piano_roll: np.array of shape (seq_len, NUM_NOTES)
+  :return: np.array of shape (seq_len, MAX_NUM_NOTES_PLAYED_AT_ONCE)
+  """
+  # identify indices of played notes
+  played_notes = np.argwhere(piano_roll > 0)  # Find (time_frame, note_index) pairs
+
+  velocities = piano_roll[played_notes[:, 0], played_notes[:, 1]]
+  velocities = velocities.astype(np.int8)
+
+  return played_notes, velocities
+
+
 def decompress_played_notes(played_notes: np.ndarray, monophonic: bool = False) -> np.ndarray:
   """
 
@@ -149,6 +171,20 @@ def decompress_played_notes(played_notes: np.ndarray, monophonic: bool = False) 
     # set the played notes to 1
     piano_roll[rows, cols] = 1
     return piano_roll.T
+
+
+def decompress_played_notes_v2(played_notes: np.ndarray, velocities: np.ndarray) -> np.ndarray:
+  """
+
+  :param played_notes: np.array of shape (num_played_notes, 2)
+  :param velocities: np.array of shape (seq_len,)
+  :return: np.array of shape (seq_len, NUM_NOTES)
+  """
+  seq_len = played_notes[-1, 0] + 1
+  piano_roll = np.zeros((seq_len, NUM_NOTES))
+  piano_roll[played_notes[:, 0], played_notes[:, 1]] = velocities
+
+  return piano_roll
 
 
 def get_instrument_by_target_instrument(
@@ -314,6 +350,126 @@ def build_hdf_file(
     print(f"Final dataset shape for {hdf_file_path}:", hf["played_notes"].shape)
 
 
+def build_hdf_file_v2(
+        hdf_file_path: str,
+        directories: List[str],
+        target_instrument: Optional[str],
+        get_instrument_func: Callable,
+        filter_func: Callable = filter_piano_roll
+):
+  """
+  Build an HDF file containing the piano rolls for the target instrument. If the target instrument is not found
+  in a MIDI file, the file is skipped.
+
+  Piano rolls are binarized, i.e., the velocity is set to 1 if the note is played at a time step, and 0 otherwise.
+  Piano rolls are rolled such that the first time step contains the first played note.
+
+  :param hdf_file_path: Path to the HDF file
+  :param directories: List of directories containing MIDI files
+  :param target_instrument: Name of the target instrument
+  :param get_instrument_func: Function to extract the target instrument from a list of instruments
+  :param filter_func: Function to filter out piano rolls
+  :return:
+  """
+
+  if os.path.exists(hdf_file_path):
+    print(f"File {hdf_file_path} already exists. Skipping...")
+    return
+
+  with h5py.File(hdf_file_path, "w") as hf:
+    # Create an expandable dataset for piano rolls
+    # we store all frames of all seqs along the first dimension and use a separate dataset for lengths
+    hf.create_dataset(
+      "played_notes",
+      shape=(0, 2),
+      maxshape=(None, 2),  # Unlimited growth along the first dimension
+      dtype=np.int32
+    )
+    hf.create_dataset(
+      "velocities",
+      shape=(0,),
+      maxshape=(None,),  # Unlimited growth along the first dimension
+      dtype=np.int8
+    )
+    hf.create_dataset(
+      "seq_lens",
+      shape=(0,),
+      maxshape=(None,),
+      dtype=np.int32
+    )
+    hf.create_dataset(
+      "sampling_freq",
+      shape=(0,),
+      maxshape=(None,),
+      dtype=np.int32
+    )
+
+    # Process MIDI files and append to the dataset
+    num_processed_files = 0
+    for directory in directories:
+      for dirpath, dirnames, filenames in os.walk(directory):
+        if num_processed_files >= MAX_NUM_PROCESSED_FILES:
+          break
+        for midi_filename in filenames:
+          num_processed_files += 1
+          midi_path = os.path.join(
+            dirpath,
+            # midi_filename can be bytes or str
+            midi_filename if isinstance(midi_filename, str) else midi_filename.decode('utf-8')
+          )
+
+          if num_processed_files % 1000 == 0:
+            print(f"Processed {num_processed_files} midi files for {hdf_file_path}")
+          if num_processed_files >= MAX_NUM_PROCESSED_FILES:
+            break
+
+          # Load the MIDI file
+          try:
+            pm = pretty_midi.PrettyMIDI(midi_path)
+          # some files are known to be corrupted, so we skip them
+          except (OSError, EOFError, KeySignatureError, ValueError, KeyError, IndexError, ZeroDivisionError) as e:
+            print(f"Error loading {midi_path} for {hdf_file_path}: {e}")
+            continue
+
+          instrument = get_instrument_func(pm.instruments, target_instrument)
+          if instrument is None:
+            continue
+
+          # Extract the piano roll for the target instrument
+          sampling_freq = int(1 / (pm.get_beats()[1] / 4))
+          if sampling_freq > 10:
+            # Skip files with high sampling rates
+            continue
+
+          piano_roll, _ = extract_piano_roll_from_instrument(instrument, sampling_freq, filter_func)
+          if piano_roll is None:
+            continue
+
+          # compress piano roll
+          played_notes, velocities = compress_piano_roll_v2(piano_roll)
+          seq_len = velocities.shape[0]
+
+          # sanity check to ensure the decompression works
+          # reconstructed_piano_roll = decompress_played_notes_v2(played_notes, velocities)
+          # assert np.all(piano_roll == reconstructed_piano_roll), "Decompression failed"
+
+          # Resize and append the piano roll to the dataset
+          # Resize the dataset to accommodate the new data
+          hf["played_notes"].resize((hf["played_notes"].shape[0] + seq_len, 2))
+          hf["played_notes"][-seq_len:] = played_notes  # Add new played notes
+          hf["velocities"].resize((hf["velocities"].shape[0] + seq_len,))
+          hf["velocities"][-seq_len:] = velocities  # Add new played notes
+          # append the length
+          hf["seq_lens"].resize((hf["seq_lens"].shape[0] + 1,))
+          hf["seq_lens"][-1] = seq_len
+          # append the sampling rate
+          hf["sampling_freq"].resize((hf["sampling_freq"].shape[0] + 1,))
+          hf["sampling_freq"][-1] = sampling_freq
+
+    # Verify the final dataset
+    print(f"Final dataset shape for {hdf_file_path}:", hf["played_notes"].shape)
+
+
 def merge_hdf_files(output_file, hdf_files):
   """
   Merge multiple HDF5 files into a single file.
@@ -321,8 +477,14 @@ def merge_hdf_files(output_file, hdf_files):
   with h5py.File(output_file, "w") as hf_out:
     hf_out.create_dataset(
       "played_notes",
-      shape=(0, MAX_NUM_NOTES_PLAYED_AT_ONCE),
-      maxshape=(None, MAX_NUM_NOTES_PLAYED_AT_ONCE),
+      shape=(0, 2),
+      maxshape=(None, 2),
+      dtype=np.int32
+    )
+    hf_out.create_dataset(
+      "velocities",
+      shape=(0,),
+      maxshape=(None,),
       dtype=np.int8
     )
     hf_out.create_dataset(
@@ -342,9 +504,16 @@ def merge_hdf_files(output_file, hdf_files):
       with h5py.File(hdf_file, "r") as hf_in:
         played_notes = hf_in["played_notes"]
         hf_out["played_notes"].resize(
-          (hf_out["played_notes"].shape[0] + played_notes.shape[0], MAX_NUM_NOTES_PLAYED_AT_ONCE)
+          (hf_out["played_notes"].shape[0] + played_notes.shape[0], 2)
         )
         hf_out["played_notes"][-played_notes.shape[0]:] = played_notes[:]
+
+        velocities = hf_in["velocities"]
+        hf_out["velocities"].resize(
+          (hf_out["velocities"].shape[0] + velocities.shape[0],)
+        )
+        hf_out["velocities"][-velocities.shape[0]:] = velocities[:]
+
         hf_out["seq_lens"].resize(
           (hf_out["seq_lens"].shape[0] + hf_in["seq_lens"].shape[0],)
         )
@@ -382,7 +551,7 @@ def build_hdf_file_multi(
     temp_hdf_file = f"{DATA_BASE_PATH}/piano_rolls_{i}.h5"
     temp_hdf_files.append(temp_hdf_file)
     process = Process(
-      target=build_hdf_file,
+      target=build_hdf_file_v2,
       args=(temp_hdf_file, subdirs, target_instrument, get_instrument_func, filter_func)
     )
     processes.append(process)
@@ -406,7 +575,7 @@ def convert_polyphonic_hdf_to_monophonic(hdf_file_path: str, output_file_path: s
       "played_notes",
       shape=(0,),
       maxshape=(None,),
-      dtype=np.int8
+      dtype=np.int32
     )
     hf_out.create_dataset(
       "seq_lens",
@@ -436,6 +605,7 @@ def convert_polyphonic_hdf_to_monophonic(hdf_file_path: str, output_file_path: s
       hf_out["sampling_freq"][:] = hf_in["sampling_freq"][:]
 
 
+# TODO: 'monophonic' currently does not work, fix this
 def save_example_piano_rolls(hdf_file_path: str, dataset_name: str, num_examples: int = 10, monophonic: bool = False):
   example_directory = os.path.join(EXAMPLE_PIANO_ROLLS_PATH, dataset_name.lower())
   if os.path.exists(example_directory):
@@ -447,6 +617,7 @@ def save_example_piano_rolls(hdf_file_path: str, dataset_name: str, num_examples
 
   with h5py.File(hdf_file_path, "r") as hf:
     played_notes = hf["played_notes"]
+    velocities = hf["velocities"]
     seq_lens = hf["seq_lens"]
     sampling_freq = hf["sampling_freq"]
 
@@ -455,9 +626,10 @@ def save_example_piano_rolls(hdf_file_path: str, dataset_name: str, num_examples
       sampling_freq_i = sampling_freq[i]
 
       start_idx = sum(seq_lens[:i])
-      played_notes_i = played_notes[start_idx:start_idx + seq_len_i]  # [seq_len_i, MAX_NUM_NOTES_PLAYED_AT_ONCE]
+      played_notes_i = played_notes[start_idx:start_idx + seq_len_i]  # [seq_len_i, 2]
+      velocities_i = velocities[start_idx:start_idx + seq_len_i]  # [seq_len_i]
 
-      piano_roll_i = decompress_played_notes(played_notes_i, monophonic=monophonic)
+      piano_roll_i = decompress_played_notes_v2(played_notes_i, velocities_i)
       visualize_piano_roll(piano_roll_i.T[:, :200], sampling_freq_i, f"{example_directory}/piano_roll_{i}")
       piano_roll_array_to_wav(piano_roll_i.T[:, :200], f"{example_directory}/piano_roll_{i}", sampling_freq_i)
 
@@ -494,7 +666,7 @@ def prepare_data(dataset_name: str = "lakh", num_workers: int = 1):
     else:
       target_instrument = None
       get_instrument_func = get_single_instrument
-      filter_func = filter_piano_roll
+      filter_func = no_filter
     build_hdf_file_multi(
       data_unpacked_path=data_unpacked_path,
       hdf_file_path=hdf_file_path,
@@ -510,7 +682,7 @@ def prepare_data(dataset_name: str = "lakh", num_workers: int = 1):
     convert_polyphonic_hdf_to_monophonic(hdf_file_path, monophonic_hdf_file_path)
 
   save_example_piano_rolls(hdf_file_path, dataset_name)
-  save_example_piano_rolls(monophonic_hdf_file_path, f"{dataset_name}_monophonic", monophonic=True)
+  # save_example_piano_rolls(monophonic_hdf_file_path, f"{dataset_name}_monophonic", monophonic=True)
 
 
 def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, sampling_freq: int):
@@ -542,8 +714,7 @@ def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, sampling_fre
         end_idx = nonzero_indices[idx - 1]
         start_time = start_idx * 1 / sampling_freq  # Convert time step to seconds
         end_time = (end_idx + 1) * 1 / sampling_freq
-        # velocity = int(row[start_idx])  # Use velocity from the piano roll
-        velocity = 100
+        velocity = int(row[start_idx])  # Use velocity from the piano roll
         note = pretty_midi.Note(
           velocity=velocity,
           pitch=note_number,
@@ -556,7 +727,7 @@ def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, sampling_fre
     end_idx = nonzero_indices[-1]
     start_time = start_idx * 1 / sampling_freq
     end_time = (end_idx + 1) * 1 / sampling_freq
-    velocity = 100
+    velocity = int(row[start_idx])  # Use velocity from the piano roll
     note = pretty_midi.Note(
       velocity=velocity,
       pitch=note_number,
