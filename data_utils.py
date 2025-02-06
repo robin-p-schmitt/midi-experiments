@@ -33,11 +33,11 @@ VALID_DATASET_NAMES = ("LAKH", "MAESTRO")
 
 FRAMES_PER_BAR = 16
 NUM_BARS = 4
-MAX_NUM_PROCESSED_FILES = 40_000
+MAX_NUM_PROCESSED_FILES = 100  # 40_000
 START_NOTE = 21
 NUM_NOTES = 88
 SILENT_IDX = NUM_NOTES
-MAX_NUM_NOTES_PLAYED_AT_ONCE = 5
+MAX_NUM_NOTES_PLAYED_AT_ONCE = 10
 
 
 def download_dataset(data_url: str, data_gz_path: str):
@@ -57,14 +57,24 @@ def unpack_dataset(data_gz_path: str):
   print('Unpacked dataset.')
 
 
+def filter_piano_roll(piano_roll: np.ndarray):
+  if np.all(np.sum(piano_roll, axis=0) > MAX_NUM_NOTES_PLAYED_AT_ONCE):
+    # Skip piano rolls with more than MAX_NUM_NOTES_PLAYED_AT_ONCE notes played at once
+    return True
+
+  return False
+
+
 def extract_piano_roll_from_instrument(
         instrument: pretty_midi.Instrument,
         sampling_freq: int,
+        filter_func: Callable = filter_piano_roll
 ) -> Tuple[Optional[np.ndarray], int]:
   """
   Extract the piano roll for the target instrument, binarize, and roll it.
   :param instrument:
   :param sampling_freq:
+  :param filter_func: Function to filter out piano rolls
   :return: Tuple of piano roll and length
   """
   # Extract the piano roll for the target instrument
@@ -81,10 +91,8 @@ def extract_piano_roll_from_instrument(
   piano_roll = piano_roll[:, :seq_len]
   piano_roll[piano_roll > 0] = 1  # binarize the piano roll
 
-  # convert piano roll of shape (NUM_NOTES, seq_len) to array with shape (seq_len, MAX_NUM_NOTES_PLAYED_AT_ONCE),
-  # where the second dimension contains the indices of the played notes at each time step
-  if np.all(np.sum(piano_roll, axis=0) > MAX_NUM_NOTES_PLAYED_AT_ONCE):
-    # Skip piano rolls with more than MAX_NUM_NOTES_PLAYED_AT_ONCE notes played at once
+  if filter_func(piano_roll):
+    # Skip piano rolls for which the filter function returns True
     return None, 0
 
   # return transposed piano roll (seq_len, NUM_NOTES) and seq_len
@@ -114,26 +122,33 @@ def compress_piano_roll(piano_roll: np.ndarray) -> np.ndarray:
   return played_notes
 
 
-def decompress_played_notes(played_notes: np.ndarray) -> np.ndarray:
+def decompress_played_notes(played_notes: np.ndarray, monophonic: bool = False) -> np.ndarray:
   """
 
-  :param played_notes: np.array of shape (seq_len, MAX_NUM_NOTES_PLAYED_AT_ONCE)
+  :param played_notes: np.array of shape (seq_len, MAX_NUM_NOTES_PLAYED_AT_ONCE) (non-monophonic) or
+    (seq_len,) (monophonic)
+  :param monophonic: bool, whether the played notes are monophonic
   :return:
   """
-  seq_len = played_notes.shape[0]
-  # True for played notes, False for padding
-  valid_mask = played_notes != -1  # [seq_len, MAX_NUM_NOTES_PLAYED_AT_ONCE]
-  # flattened array of valid notes
-  rows = played_notes[valid_mask]  # [num_notes_played]
-  # flattened array of time steps -> repeat each time step MAX_NUM_NOTES_PLAYED_AT_ONCE times since we allow up to
-  # MAX_NUM_NOTES_PLAYED_AT_ONCE notes per time step
-  cols = np.repeat(np.arange(seq_len), MAX_NUM_NOTES_PLAYED_AT_ONCE)[valid_mask.flatten()]
+  if monophonic:
+    piano_roll = np.eye(NUM_NOTES + 1)[played_notes]  # [seq_len, NUM_NOTES + 1]
+    piano_roll[played_notes == SILENT_IDX] = 0  # set silent notes to 0
+    piano_roll = piano_roll[:, :-1]  # remove the silent note
+    return piano_roll
+  else:
+    seq_len = played_notes.shape[0]
+    # True for played notes, False for padding
+    valid_mask = played_notes != -1  # [seq_len, MAX_NUM_NOTES_PLAYED_AT_ONCE]
+    # flattened array of valid notes
+    rows = played_notes[valid_mask]  # [num_notes_played]
+    # flattened array of time steps -> repeat each time step MAX_NUM_NOTES_PLAYED_AT_ONCE times since we allow up to
+    # MAX_NUM_NOTES_PLAYED_AT_ONCE notes per time step
+    cols = np.repeat(np.arange(seq_len), MAX_NUM_NOTES_PLAYED_AT_ONCE)[valid_mask.flatten()]
 
-  piano_roll = np.zeros((NUM_NOTES, seq_len))
-  # set the played notes to 1
-  piano_roll[rows, cols] = 1
-
-  return piano_roll.T
+    piano_roll = np.zeros((NUM_NOTES, seq_len))
+    # set the played notes to 1
+    piano_roll[rows, cols] = 1
+    return piano_roll.T
 
 
 def get_instrument_by_target_instrument(
@@ -147,6 +162,34 @@ def get_instrument_by_target_instrument(
     return instruments[0]
   else:
     return None
+
+
+def get_first_instrument(
+        instruments: List[pretty_midi.Instrument],
+        target_instrument: Optional[str]
+) -> Optional[pretty_midi.Instrument]:
+  if len(instruments) > 0:
+    return instruments[0]
+  else:
+    return None
+
+
+def get_first_monophonic_instrument(
+        instruments: List[pretty_midi.Instrument],
+        target_instrument: Optional[str]
+) -> Optional[pretty_midi.Instrument]:
+  """
+  Get the first monophonic instrument in the list of instruments. Return None if no monophonic instrument is found.
+  :param instruments:
+  :param target_instrument:
+  :return:
+  """
+  for instrument in instruments:
+    piano_roll = instrument.get_piano_roll()[START_NOTE:START_NOTE + NUM_NOTES]  # (NUM_NOTES, None)
+    if np.all(np.sum(piano_roll, axis=0) <= 2):
+      return instrument
+
+  return None
 
 
 def get_single_instrument(
@@ -164,7 +207,8 @@ def build_hdf_file(
         hdf_file_path: str,
         directories: List[str],
         target_instrument: Optional[str],
-        get_instrument_func: Callable
+        get_instrument_func: Callable,
+        filter_func: Callable = filter_piano_roll
 ):
   """
   Build an HDF file containing the piano rolls for the target instrument. If the target instrument is not found
@@ -177,6 +221,7 @@ def build_hdf_file(
   :param directories: List of directories containing MIDI files
   :param target_instrument: Name of the target instrument
   :param get_instrument_func: Function to extract the target instrument from a list of instruments
+  :param filter_func: Function to filter out piano rolls
   :return:
   """
 
@@ -243,7 +288,7 @@ def build_hdf_file(
             # Skip files with high sampling rates
             continue
 
-          piano_roll, seq_len = extract_piano_roll_from_instrument(instrument, sampling_freq)
+          piano_roll, seq_len = extract_piano_roll_from_instrument(instrument, sampling_freq, filter_func)
           if piano_roll is None:
             continue
 
@@ -315,9 +360,10 @@ def merge_hdf_files(output_file, hdf_files):
 def build_hdf_file_multi(
         data_unpacked_path: str,
         hdf_file_path: str,
-        target_instrument: str,
+        target_instrument: Optional[str],
         get_instrument_func: Callable,
         num_cores: int = 1,
+        filter_func: Callable = filter_piano_roll,
 ):
   assert num_cores <= os.cpu_count(), "Number of cores exceeds the number of available cores."
 
@@ -335,7 +381,10 @@ def build_hdf_file_multi(
   for i, subdirs in enumerate(subdirectories_split):
     temp_hdf_file = f"{DATA_BASE_PATH}/piano_rolls_{i}.h5"
     temp_hdf_files.append(temp_hdf_file)
-    process = Process(target=build_hdf_file, args=(temp_hdf_file, subdirs, target_instrument, get_instrument_func))
+    process = Process(
+      target=build_hdf_file,
+      args=(temp_hdf_file, subdirs, target_instrument, get_instrument_func, filter_func)
+    )
     processes.append(process)
     process.start()
 
@@ -387,7 +436,7 @@ def convert_polyphonic_hdf_to_monophonic(hdf_file_path: str, output_file_path: s
       hf_out["sampling_freq"][:] = hf_in["sampling_freq"][:]
 
 
-def save_example_piano_rolls(hdf_file_path: str, dataset_name: str, num_examples: int = 5, monophonic: bool = False):
+def save_example_piano_rolls(hdf_file_path: str, dataset_name: str, num_examples: int = 10, monophonic: bool = False):
   example_directory = os.path.join(EXAMPLE_PIANO_ROLLS_PATH, dataset_name.lower())
   if os.path.exists(example_directory):
     print(f"Example piano rolls already exist for {dataset_name}. Skipping...")
@@ -406,13 +455,10 @@ def save_example_piano_rolls(hdf_file_path: str, dataset_name: str, num_examples
       sampling_freq_i = sampling_freq[i]
 
       start_idx = sum(seq_lens[:i])
-      played_notes_i = played_notes[start_idx:start_idx + seq_len_i]
+      played_notes_i = played_notes[start_idx:start_idx + seq_len_i]  # [seq_len_i, MAX_NUM_NOTES_PLAYED_AT_ONCE]
 
-      if monophonic:
-        piano_roll_i = np.eye(NUM_NOTES + 1)[played_notes_i]
-      else:
-        piano_roll_i = decompress_played_notes(played_notes_i)
-      visualize_piano_roll(piano_roll_i.T, sampling_freq_i, f"{example_directory}/piano_roll_{i}")
+      piano_roll_i = decompress_played_notes(played_notes_i, monophonic=monophonic)
+      visualize_piano_roll(piano_roll_i.T[:, :200], sampling_freq_i, f"{example_directory}/piano_roll_{i}")
       piano_roll_array_to_wav(piano_roll_i.T[:, :200], f"{example_directory}/piano_roll_{i}", sampling_freq_i)
 
 
@@ -440,17 +486,22 @@ def prepare_data(dataset_name: str = "lakh", num_workers: int = 1):
     print('HDF already generated.')
   else:
     if dataset_name == "LAKH":
-      target_instrument = "Bass"
-      get_instrument_func = get_instrument_by_target_instrument
+      # target_instrument = "Piano"
+      target_instrument = None
+      # get_instrument_func = get_first_instrument
+      get_instrument_func = get_first_monophonic_instrument
+      filter_func = filter_piano_roll
     else:
       target_instrument = None
       get_instrument_func = get_single_instrument
+      filter_func = filter_piano_roll
     build_hdf_file_multi(
       data_unpacked_path=data_unpacked_path,
       hdf_file_path=hdf_file_path,
       num_cores=num_workers,
       target_instrument=target_instrument,
-      get_instrument_func=get_instrument_func
+      get_instrument_func=get_instrument_func,
+      filter_func=filter_func
     )
 
   if os.path.exists(monophonic_hdf_file_path):
@@ -491,7 +542,8 @@ def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, sampling_fre
         end_idx = nonzero_indices[idx - 1]
         start_time = start_idx * 1 / sampling_freq  # Convert time step to seconds
         end_time = (end_idx + 1) * 1 / sampling_freq
-        velocity = int(row[start_idx])  # Use velocity from the piano roll
+        # velocity = int(row[start_idx])  # Use velocity from the piano roll
+        velocity = 100
         note = pretty_midi.Note(
           velocity=velocity,
           pitch=note_number,
@@ -504,7 +556,7 @@ def piano_roll_array_to_wav(piano_roll: np.ndarray, file_path: str, sampling_fre
     end_idx = nonzero_indices[-1]
     start_time = start_idx * 1 / sampling_freq
     end_time = (end_idx + 1) * 1 / sampling_freq
-    velocity = int(row[start_idx])
+    velocity = 100
     note = pretty_midi.Note(
       velocity=velocity,
       pitch=note_number,
@@ -554,3 +606,11 @@ def visualize_piano_roll(piano_roll: np.ndarray, sampling_freq: int, filename: O
 
   # plt.show()
   plt.savefig(filename)
+
+
+def get_hdf_file_path(dataset_name: str):
+  dataset_name = dataset_name.upper()
+  assert dataset_name in VALID_DATASET_NAMES, f"Invalid dataset name: {dataset_name}"
+  hdf_file_path = eval(f"{dataset_name}_MONOPHONIC_HDF_FILE_PATH")
+
+  return hdf_file_path

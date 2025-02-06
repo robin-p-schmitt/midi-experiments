@@ -250,18 +250,18 @@ configs = []
 #   ),
 # ))
 
-configs.append(dict(
-  alias="maestro_transformer_vae_v4_50-epochs_0.2-data-fraction_wd-5e-4",
-  **dict_update_deep(
-    transformer_vae_v4_config,
-    {
-      # train opts
-      "train_opts.n_epochs": 50,
-      "train_opts.dataset_fraction": 0.2,
-      "train_opts.optimizer_opts.weight_decay": 5e-4,
-    }
-  ),
-))
+# configs.append(dict(
+#   alias="maestro_transformer_vae_v4_1-epochs_0.01-data-fraction_wd-5e-4",
+#   **dict_update_deep(
+#     transformer_vae_v4_config,
+#     {
+#       # train opts
+#       "train_opts.n_epochs": 1,
+#       "train_opts.dataset_fraction": 0.05,
+#       "train_opts.optimizer_opts.weight_decay": 5e-4,
+#     }
+#   ),
+# ))
 
 
 for config in configs:

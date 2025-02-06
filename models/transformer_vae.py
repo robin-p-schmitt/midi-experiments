@@ -21,7 +21,10 @@ from data_utils import (
   MAESTRO_MONOPHONIC_HDF_FILE_PATH,
   LAKH_MONOPHONIC_HDF_FILE_PATH,
   SILENT_IDX,
-  NUM_BARS
+  NUM_BARS,
+  get_hdf_file_path,
+  decompress_played_notes,
+  piano_roll_array_to_wav,
 )
 
 MODEL_CHECKPOINTS_PATH = "model_checkpoints"
@@ -64,7 +67,7 @@ class VAETransformerEncoder(nn.Module):
   def forward(self, x):
     """
 
-    :param x: input of shape [seq_len + 1, batch_size, input_dim]. The last frame is a special frame which later
+    :param x: input of shape [seq_len + 1, batch_size]. The last frame is a special frame which later
     acts as the hidden representation of the input.
     :return:
     """
@@ -133,7 +136,7 @@ class VAEHierarchicalTransformerDecoder(nn.Module):
     :param z: hidden representation shape [batch_size, d_model]
     :param output_seq_len: number of frames of the output (= number of frames of the encoder input)
     :param num_sub_seqs: chunk the output into num_sub_seqs sub sequences
-    :param x: optional input of shape [output_seq_len, batch_size, input_dim]
+    :param x: optional input of shape [output_seq_len, batch_size]
     :return:
     """
     z = self.conductor_in(z)
@@ -220,7 +223,7 @@ class VAETransformerDecoder(nn.Module):
     """
 
     :param z: hidden representation shape [batch_size, d_model]
-    :param x: optional input of shape [output_seq_len, batch_size, input_dim]
+    :param x: optional (right-shifted) input of shape [output_seq_len - 1, batch_size]
     :return:
     """
 
@@ -229,8 +232,8 @@ class VAETransformerDecoder(nn.Module):
 
       # concatenate the conductor sequence with the input
       x_ext = torch.cat((z.unsqueeze(0), x), dim=0)  # [1 + output_seq_len, batch_size, d_model]
-      # remove the last frame of the input (shift right)
-      x_ext = x_ext[:-1]  # [output_seq_len, batch_size, d_model]
+      # # remove the last frame of the input (shift right)
+      # x_ext = x_ext[:-1]  # [output_seq_len, batch_size, d_model]
 
       x_ext += self.positional_encoding(x_ext)
       causal_mask = nn.Transformer.generate_square_subsequent_mask(x_ext.size(0))
@@ -257,6 +260,9 @@ class VAEModel(nn.Module):
   ):
     super(VAEModel, self).__init__()
 
+    self.input_dim = input_dim
+    self.output_dim = output_dim
+
     self.encoder = VAETransformerEncoder(
       input_dim=input_dim,
       max_time_steps=max_time_steps,
@@ -272,8 +278,10 @@ class VAEModel(nn.Module):
   def encode(self, x):
     return self.encoder(x)
 
-  def decode(self, z, output_seq_len, num_sub_seqs, x=None):
+  def decode(self, z, output_seq_len=None, num_sub_seqs=None, x=None):
     if isinstance(self.decoder, VAEHierarchicalTransformerDecoder):
+      assert output_seq_len is not None, "output_seq_len must be provided"
+      assert num_sub_seqs is not None, "num_sub_seqs must be provided"
       return self.decoder(z, output_seq_len, num_sub_seqs, x)
     else:
       return self.decoder(z, x)
@@ -325,6 +333,24 @@ class CyclicAnnealingScheduler:
     return beta
 
 
+def append_special_idx(played_notes: torch.Tensor, seq_lens: torch.Tensor):
+  """
+  Append special idx. in this frame, the transformer encoder should store the hidden representation z
+  :param played_notes: tensor of shape [seq_len, batch_size]
+  :param seq_lens:
+  :return:
+  """
+  played_notes_ext = torch.cat(
+    (played_notes, played_notes[-1].unsqueeze(0)),
+  )
+  played_notes_ext = played_notes_ext.scatter(
+    0,
+    index=seq_lens.to(played_notes.device).to(torch.int64).unsqueeze(0),
+    value=SILENT_IDX + 1
+  )
+  return played_notes_ext
+
+
 def calc_model_output_and_loss(
         played_notes: torch.Tensor,
         seq_lens: torch.Tensor,
@@ -339,7 +365,7 @@ def calc_model_output_and_loss(
 ):
   """
 
-  :param played_notes:
+  :param played_notes: tensor of shape [seq_len, batch_size]
   :param seq_lens:
   :param model:
   :param criterion:
@@ -356,15 +382,11 @@ def calc_model_output_and_loss(
   else:
     model.eval()
 
-  # append special idx. in this frame, the transformer encoder should store the hidden representation z
-  # from which the decoder should reconstruct the original input sequence
-  played_notes_ext = torch.cat(
-    (played_notes, played_notes[-1].unsqueeze(0)),
-  )
-  played_notes_ext = played_notes_ext.scatter(0, index=seq_lens.to(played_notes.device).to(torch.int64).unsqueeze(0), value=SILENT_IDX + 1)
+  played_notes_ext = append_special_idx(played_notes, seq_lens)
 
   z, mu, log_var = model.encode(x=played_notes_ext)
-  outputs = model.decode(z=z, output_seq_len=played_notes.size(0), num_sub_seqs=NUM_BARS, x=played_notes)
+  # only pass played notes until the last frame (shift right)
+  outputs = model.decode(z=z, output_seq_len=played_notes.size(0), num_sub_seqs=NUM_BARS, x=played_notes[:-1])
 
   played_notes_packed = pack_padded_sequence(
     played_notes, seq_lens, batch_first=False, enforce_sorted=False)
@@ -427,9 +449,7 @@ def train(
   optimizer_cls = eval(optimizer_opts.pop("cls"))
   optimizer = optimizer_cls(model.parameters(), **optimizer_opts)
 
-  dataset_name = dataset_name.upper()
-  assert dataset_name in VALID_DATASET_NAMES, f"Invalid dataset name: {dataset_name}"
-  hdf_file_path = eval(f"{dataset_name}_MONOPHONIC_HDF_FILE_PATH")
+  hdf_file_path = get_hdf_file_path(dataset_name)
 
   train_loader, devtrain_loader, dev_loader = get_data_loaders_for_training(
     hdf_file_path=hdf_file_path,
@@ -564,13 +584,13 @@ def train(
     plt.close()
 
   best_dev_checkpoint_path = f"{checkpoint_path}/model_epoch_{best_dev_epoch}.pt"
-  # test(
-  #   model=model,
-  #   checkpoint_path=best_dev_checkpoint_path,
-  #   alias=alias,
-  #   criterion=criterion,
-  #   dataset_name=dataset_name,
-  # )
+  test(
+    model=model,
+    checkpoint_path=best_dev_checkpoint_path,
+    alias=alias,
+    criterion=criterion,
+    dataset_name=dataset_name,
+  )
 
 
 def test(
@@ -582,16 +602,26 @@ def test(
         n_context_bars: int = 4,
         num_samples: int = 5,
 ):
-  def _visualize_piano_roll(piano_rolls_tensor: torch.Tensor, sampling_freq_tensor: torch.Tensor, filename: str):
+  def _visualize_piano_roll(played_notes_tensor: torch.Tensor, sampling_freq_tensor: torch.Tensor, filename: str):
     """
 
-    :param piano_rolls_tensor: tensor of shape [seq_len, batch_size, num_notes]
+    :param played_notes_tensor: tensor of shape [seq_len, batch_size]
     """
+
+    played_notes_ = played_notes_tensor[:, 0].cpu().numpy()  # [seq_len]
+    piano_rolls = decompress_played_notes(played_notes_, monophonic=True)  # [seq_len, NUM_NOTES]
+    piano_rolls = piano_rolls.transpose(1, 0)  # [NUM_NOTES, seq_len]
+    sampling_freq_ = sampling_freq_tensor[0].item()
 
     visualize_piano_roll(
-      piano_rolls_tensor.permute(1, 2, 0)[0].cpu().numpy(),
-      sampling_freq=sampling_freq_tensor[0].item(),
+      piano_rolls,
+      sampling_freq=sampling_freq_,
       filename=filename
+    )
+    piano_roll_array_to_wav(
+      piano_rolls,
+      file_path=filename,
+      sampling_freq=sampling_freq_
     )
 
   model.load_state_dict(torch.load(checkpoint_path), strict=False)
@@ -603,57 +633,49 @@ def test(
   device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
   print(f"Using device: {device}")
   model.to(device)
+  model.eval()
 
-  n_context_frames = n_context_bars * FRAMES_PER_BAR
-
+  hdf_file_path = get_hdf_file_path(dataset_name)
   _, _, dev_loader = get_data_loaders_for_training(
-    dataset_name=dataset_name,
+    hdf_file_path=hdf_file_path,
     batch_size=1,
     dataset_fraction=1.0,
+    dataset_cls=PlayedNotesDataset,
   )
 
-  for data_alias, data_loader in [
-    ("dev", dev_loader),
-    # ("devtrain", devtrain_loader),
-  ]:
-    model.eval()
-
-    for batch_idx, (piano_rolls, seq_lens, sampling_freq) in enumerate(data_loader):
-      piano_rolls = piano_rolls.to(device).transpose(0, 1)  # [seq_len, batch_size, input_dim]
-      _visualize_piano_roll(
-        piano_rolls,
-        sampling_freq,
-        f"{piano_roll_dir}/gt_piano_roll_{batch_idx}"
-      )
-
-      piano_rolls_shifted = F.pad(piano_rolls, (0, 0, 0, 0, 1, 0))[:-1]  # [seq_len, batch_size, input_dim]
-      with torch.no_grad():
-        n_prediction_steps = piano_rolls.size(0) - n_context_frames
-        # context frames to start prediction
-        piano_rolls_context = piano_rolls_shifted[:n_context_frames].to(device)
-        # create tensor to hold the predicted tensor
-        predicted_piano_rolls = torch.zeros(
-          (piano_rolls.size(0) + 1, *piano_rolls.size()[1:]),
-          device=device
-        )
-        # insert context into tensor while considering initial 0 padding frame
-        predicted_piano_rolls[:n_context_frames] = piano_rolls_context
-
-        for step in range(n_prediction_steps + 1):
-          logits = model(predicted_piano_rolls[:n_context_frames + step])
-          outputs = torch.sigmoid(logits)
-          # outputs[outputs >= 0.5] = 1
-          # outputs[outputs < 0.5] = 0
-          predicted_piano_rolls[n_context_frames + step] = outputs[-1]
-
-        predicted_piano_rolls = predicted_piano_rolls[1:]  # remove initial 0 padding frame
+  with torch.no_grad():
+    for data_alias, data_loader in [
+      ("dev", dev_loader),
+      # ("devtrain", devtrain_loader),
+    ]:
+      for batch_idx, (played_notes, seq_lens, sampling_freq) in enumerate(data_loader, start=1):
+        played_notes = played_notes.to(device).transpose(0, 1)  # [seq_len, batch_size]
         _visualize_piano_roll(
-          predicted_piano_rolls,
+          played_notes,
+          sampling_freq,
+          f"{piano_roll_dir}/gt_piano_roll_{batch_idx}"
+        )
+
+        played_notes_ext = append_special_idx(played_notes, seq_lens)  # [seq_len + 1, batch_size]
+        z, mu, log_var = model.encode(x=played_notes_ext)
+
+        n_prediction_steps = seq_lens[0].item()
+        # create tensor to hold the predicted tensor
+        rec_played_notes = torch.zeros(played_notes.size(), device=device, dtype=torch.long)  # [seq_len, batch_size]
+
+        for step in range(n_prediction_steps):
+          logits = model.decode(z=z, x=rec_played_notes[:step])  # [seq_len, batch_size, NUM_NOTES + 1]
+          outputs = torch.softmax(logits, dim=-1)
+          outputs_argmax = outputs[-1].argmax(dim=-1).to(torch.long)
+          rec_played_notes[step] = outputs_argmax
+
+        _visualize_piano_roll(
+          rec_played_notes,
           sampling_freq,
           f"{piano_roll_dir}/pred_piano_roll_{batch_idx}"
         )
 
-      if batch_idx == num_samples:
-        break
+        if batch_idx == num_samples:
+          break
 
-  print(f"Predictions saved to {piano_roll_dir}")
+    print(f"Predictions saved to {piano_roll_dir}")
